@@ -1,0 +1,10 @@
+.DS_Store
+Thumbs.db
+*.csv
+*.tsv
+*.edf
+*.bdf
+*.fif
+*.set
+experiment-data/
+participant-data/
