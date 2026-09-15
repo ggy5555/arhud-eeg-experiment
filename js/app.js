@@ -131,6 +131,7 @@ function messageHtml(title, body = "", timer = "") {
 }
 
 function sleep(ms) {
+  if (QA_MODE) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, scaled(ms)));
 }
 
@@ -264,7 +265,7 @@ function collectKey(validKeys, durationMs, autoKey = null) {
     window.addEventListener("keydown", onKey, true);
     const timer = setTimeout(() => finish(null), scaled(durationMs));
     state.currentKeyCancel = () => finish(null);
-    if (QA_MODE && autoKey) setTimeout(() => finish(autoKey), 4);
+    if (QA_MODE && autoKey) queueMicrotask(() => finish(autoKey));
   });
 }
 
@@ -276,6 +277,12 @@ function waitForSpace(title = "SPACE를 눌러 계속", body = "", badge = "SPAC
 async function countdownMessage(title, body, durationMs, eventPrefix = null) {
   const started = performance.now();
   if (eventPrefix) state.store?.emit(`${eventPrefix}_ONSET`, "RUN", "NONE", "operator");
+  if (QA_MODE) {
+    showExperiment(messageHtml(title, body, "QA"), "QA 단축 · 연구 결과 사용 금지");
+    await Promise.resolve();
+    if (eventPrefix) state.store?.emit(`${eventPrefix}_END`, "RUN", "NONE", "operator");
+    return;
+  }
   while (performance.now() - started < scaled(durationMs)) {
     await waitWhilePaused();
     const elapsedReal = (performance.now() - started) / TIME_SCALE;
