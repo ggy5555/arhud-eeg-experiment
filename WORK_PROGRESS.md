@@ -55,4 +55,5 @@
 - 2026-09-15: `node --check`로 `app.js`, `data.js`, `stimuli.js` 문법 PASS.
 - 2026-09-15: 배포된 `web3`에서 전체 QA 완료. 48 main/pilot rows, 30 calibration rows, 386 markers, `COMPLETE`, 다운로드 6종 확인.
 - 2026-09-15: QA 중 0-back/2-back 안내 overlay가 숫자 자극을 가리는 문제를 확인해 `web4`에서 안내를 지운 뒤 자극을 제시하도록 수정.
+- 2026-09-15: GitHub Actions run #4 성공, 공개 Pages에서 `v2026.09.15-web4` 확인, 배포 화면의 100-seed 자동검사 PASS.
 - 원격 QA 환경에서는 전체화면 API가 거부되어 `FULLSCREEN_REQUEST_FAILED`가 기록됨. 실제 실험용 Chrome/Edge에서 전체화면과 geometry를 별도 확인해야 함.
