@@ -17,11 +17,22 @@
 
 - [x] GitHub 저장소 초기 상태 확인: README와 LICENSE만 존재
 - [x] 최종 Python 패키지의 조건·randomization·timing·CSV marker 계약 재확인
-- [ ] 정적 HTML/CSS 화면 및 실험자 단계 안내
-- [ ] visual-degree geometry와 3×3 connector stimulus
-- [ ] calibration, pilot, 48-trial main 실행
-- [ ] 행동·marker·session·partial 자료 다운로드
-- [ ] 자동 self-test, 브라우저 시각검사 및 GitHub Pages 배포 확인
+- [x] 정적 HTML/CSS 화면 및 실험자 단계 안내 구현
+- [x] visual-degree geometry와 3×3 connector stimulus 구현
+- [x] eyes-open/closed, 0-back/2-back calibration, pilot, 48-trial main 흐름 구현
+- [x] 행동·marker·session·practice·schedule·partial 자료의 로컬 다운로드 및 체크포인트 구현
+- [x] Node self-test: 48-trial 균형, seed 재현성, 좌표, connector, n-back, CSV 계약 통과
+- [ ] 실제 브라우저 전체 흐름 확인 및 GitHub Pages 배포 확인
+
+## 생성·수정한 주요 파일
+
+- `index.html`, `styles.css`: 실험자 단계 안내와 참가자 자극 화면
+- `js/config.js`: 48-trial 확정 조건·시간·키·CSV 계약
+- `js/randomization.js`: 균형 randomization, participant seed, pilot/n-back schedule
+- `js/stimuli.js`: 시야각 좌표, 3×3 connector, cue, geometry·sync 화면
+- `js/data.js`: 로컬 checkpoint와 CSV/JSON 다운로드
+- `js/app.js`: preflight→연습→EEG 수동 동기화→calibration→본실험→저장 흐름
+- `tests/self-test.mjs`: 장비 없는 순수 로직 자동검사
 
 ## 미확정/장비 확인 필요
 
@@ -32,8 +43,14 @@
 
 ## 다음 작업
 
-1. 앱 골격과 설정 검증을 구현한다.
-2. 순수 randomization/geometry 코어와 self-test를 구현한다.
-3. 자극·calibration·저장·복구 흐름을 구현한다.
-4. 자동검사 및 실제 렌더링을 점검한다.
-5. 의미 있는 단위마다 커밋하고 Pages 상태를 확인한다.
+1. 현재 UI·저장 구현을 GitHub에 체크포인트 커밋한다.
+2. README와 구현 상태·실험 당일 사용 순서를 작성한다.
+3. GitHub Pages 배포 설정을 추가하고 공개 주소를 확인한다.
+4. 배포된 브라우저에서 geometry→pilot→48-trial QA 흐름을 확인한다.
+5. 실제 MeasureWiz pilot으로 trigger offset·drift·원본 CSV schema를 검증한다.
+
+## 검증 기록
+
+- 2026-09-15: `npm test` PASS. 48-trial/2-block/6-condition/SAME-DIFF/cue-direction/CSV 계약 검증.
+- 2026-09-15: `node --check`로 `app.js`, `data.js`, `stimuli.js` 문법 PASS.
+- 이 실행 환경에는 Playwright 패키지만 있고 Chromium 실행 파일이 없어 로컬 전체 클릭 smoke test는 실행 불가. 배포 후 실제 브라우저 확인이 남아 있음.

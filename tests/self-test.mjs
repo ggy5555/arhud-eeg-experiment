@@ -1,7 +1,13 @@
 import { webcrypto } from "node:crypto";
 globalThis.crypto ??= webcrypto;
 
-import { CONDITIONS, POSITION_DEG, TIMING_MS } from "../js/config.js";
+import {
+  BEHAVIOR_COLUMNS,
+  CONDITIONS,
+  MARKER_COLUMNS,
+  POSITION_DEG,
+  TIMING_MS,
+} from "../js/config.js";
 import {
   deriveParticipantSeed,
   generateMainTrials,
@@ -10,6 +16,7 @@ import {
   validateMainSchedule,
 } from "../js/randomization.js";
 import { connectorPair, degreesToCssPixels } from "../js/stimuli.js";
+import { rowsToCsv } from "../js/data.js";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -56,5 +63,18 @@ assert(px > 0 && Number.isFinite(px), "visual-degree conversion failed");
 assert(TIMING_MS.fixation === 1000 && TIMING_MS.taskAndCue === 3000,
   "locked timing changed");
 
-console.log("PASS: 48-trial randomization, geometry, connector and calibration core");
+const behaviorCsv = rowsToCsv([{ participant: "P001", session: "S01" }], BEHAVIOR_COLUMNS);
+assert(behaviorCsv.startsWith(`\ufeff${BEHAVIOR_COLUMNS.join(",")}\r\n`),
+  "behavior CSV header mismatch");
+assert(behaviorCsv.trimEnd().split("\r\n").length === 2, "behavior CSV row count mismatch");
+const markerCsv = rowsToCsv([{
+  onset_seconds: "1.000000",
+  event_name: "TASK_ONSET",
+  trial_id: "P001_S01_B01_T001",
+  condition: "CENTER",
+  phase: "main",
+}], MARKER_COLUMNS);
+assert(markerCsv.includes("TASK_ONSET"), "marker CSV data missing");
+assert(markerCsv.includes(MARKER_COLUMNS.join(",")), "marker CSV header mismatch");
 
+console.log("PASS: 48-trial randomization, geometry, connector, calibration and CSV contracts");

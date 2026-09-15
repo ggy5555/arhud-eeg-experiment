@@ -117,6 +117,12 @@ export function drawBlank(canvas) {
   prepareCanvas(canvas);
 }
 
+export function drawSyncFlash(canvas) {
+  const { ctx, width, height } = prepareCanvas(canvas);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+}
+
 export function drawResponsePrompt(canvas, title, subtitle) {
   const { ctx, width, height } = prepareCanvas(canvas);
   ctx.fillStyle = "#e9f3ff";
@@ -196,4 +202,3 @@ export function drawDigit(canvas, digit) {
   ctx.font = "800 90px system-ui, sans-serif";
   ctx.fillText(String(digit), width / 2, height / 2);
 }
-
