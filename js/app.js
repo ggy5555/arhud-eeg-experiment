@@ -8,20 +8,20 @@ import {
   STUDY_TITLE,
   TIMING_MS,
   validateIdentifier,
-} from "./config.js";
+} from "./config.js?v=20260915-web3";
 import {
   deriveParticipantSeed,
   generateMainTrials,
   generateNBackTrials,
   generatePilotTrials,
   validateMainSchedule,
-} from "./randomization.js";
+} from "./randomization.js?v=20260915-web3";
 import {
   SessionStore,
   discardIncompleteCheckpoint,
   downloadIncompleteCheckpoint,
   getIncompleteCheckpoint,
-} from "./data.js";
+} from "./data.js?v=20260915-web3";
 import {
   drawBlank,
   drawDigit,
@@ -30,7 +30,7 @@ import {
   drawResponsePrompt,
   drawSyncFlash,
   drawTrial,
-} from "./stimuli.js";
+} from "./stimuli.js?v=20260915-web3";
 
 const QA_MODE = new URLSearchParams(location.search).get("qa") === "1";
 const TIME_SCALE = QA_MODE ? 0.003 : 1;

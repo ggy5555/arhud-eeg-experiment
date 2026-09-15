@@ -1,5 +1,5 @@
-import { ARROWS, POSITION_DEG } from "./config.js";
-import { mulberry32 } from "./randomization.js";
+import { ARROWS, POSITION_DEG } from "./config.js?v=20260915-web3";
+import { mulberry32 } from "./randomization.js?v=20260915-web3";
 
 const GRID_EDGES = [];
 for (let row = 0; row < 3; row += 1) {

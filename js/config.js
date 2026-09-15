@@ -1,7 +1,7 @@
 export const STUDY_TITLE =
   "EEG 및 작업 수행 분석을 통한 개인 맞춤형 시각 보조정보 배치 알고리즘 설계 및 검증: AR 작업보조 HUD 적용을 위한 모니터 기반 시뮬레이션 연구";
 
-export const APP_VERSION = "2026.09.15-web2";
+export const APP_VERSION = "2026.09.15-web3";
 export const MASTER_SEED = 260904;
 
 export const CONDITIONS = ["CENTER", "N-L", "N-R", "N-T", "N-B", "N-BR"];
