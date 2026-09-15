@@ -8,20 +8,20 @@ import {
   STUDY_TITLE,
   TIMING_MS,
   validateIdentifier,
-} from "./config.js?v=20260915-web3";
+} from "./config.js?v=20260915-web4";
 import {
   deriveParticipantSeed,
   generateMainTrials,
   generateNBackTrials,
   generatePilotTrials,
   validateMainSchedule,
-} from "./randomization.js?v=20260915-web3";
+} from "./randomization.js?v=20260915-web4";
 import {
   SessionStore,
   discardIncompleteCheckpoint,
   downloadIncompleteCheckpoint,
   getIncompleteCheckpoint,
-} from "./data.js?v=20260915-web3";
+} from "./data.js?v=20260915-web4";
 import {
   drawBlank,
   drawDigit,
@@ -30,7 +30,7 @@ import {
   drawResponsePrompt,
   drawSyncFlash,
   drawTrial,
-} from "./stimuli.js?v=20260915-web3";
+} from "./stimuli.js?v=20260915-web4";
 
 const QA_MODE = new URLSearchParams(location.search).get("qa") === "1";
 const TIME_SCALE = QA_MODE ? 0.003 : 1;
@@ -604,6 +604,7 @@ async function runNBack(level) {
     ? "숫자가 0이면 F(SAME), 아니면 J(DIFFERENT)를 누르세요."
     : "현재 숫자가 두 칸 전 숫자와 같으면 F(SAME), 다르면 J(DIFFERENT)를 누르세요.";
   await waitForSpace(title, `${body} 시작하려면 SPACE를 누르세요.`, "15 trials · 60초 · P=일시정지");
+  experimentMessage.innerHTML = "";
   const trials = generateNBackTrials(level, state.seed);
   for (const trial of trials) {
     throwIfAborted();

@@ -29,7 +29,9 @@
 - `node --check js/stimuli.js`: PASS
 - 자동검사 범위: 48 trials, 2×24 blocks, 조건/정답/cue 균형, seed 재현성, 3연속 금지, 위치 반지름, connector, n-back, CSV header
 
-현재 작업 환경에는 실제 Chromium 실행 파일이 없어 전체 클릭 흐름의 자동 browser smoke test는 실행하지 못했다. 따라서 **실제 실험용 컴퓨터의 Chrome/Edge에서 geometry와 6-trial pilot을 직접 완료하는 검증이 필수**다.
+배포된 `web3`에서 브라우저 전체 QA를 완료했다. 종료 화면에서 48 main/pilot rows, 30 calibration rows, 386 markers, `COMPLETE`, 6종 다운로드 항목을 확인했다. QA 중 0-back/2-back 안내 overlay가 숫자 자극을 가리는 문제를 발견하여 `web4`에서 수정했다.
+
+원격 QA 브라우저에서는 전체화면 API가 허용되지 않아 `FULLSCREEN_REQUEST_FAILED`가 기록되었다. **실제 실험용 컴퓨터의 Chrome/Edge에서 geometry, 전체화면, 응답키, 6-trial pilot을 직접 확인하는 절차는 여전히 필수**다.
 
 ## ⚠️ 장비 확인 후 필요
 
