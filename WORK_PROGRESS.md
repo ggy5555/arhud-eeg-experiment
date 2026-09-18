@@ -43,7 +43,7 @@
 
 ## 다음 작업
 
-1. [진행 중] `web6`의 단일 실행 잠금·화면 정리 수정본을 공개 배포하고 연속 클릭 재현 검사를 수행한다.
+1. [완료] `web6`의 단일 실행 잠금·화면 정리 수정본을 공개 배포하고 시작 버튼 연속 클릭 차단을 확인했다.
 2. 실제 실험용 컴퓨터에서 6-trial pilot을 한 번 실행해 화면 겹침·버벅임·전체화면·응답키를 확인한다.
 3. 실제 MeasureWiz pilot으로 trigger offset·drift·원본 CSV schema를 검증한다.
 
@@ -58,5 +58,7 @@
 - 2026-09-18: 매 trial의 시작·응답·종료는 웹 marker로 자동 기록하고, MeasureWiz 수동 TRIGGER는 세션/블록 기준점에서만 누른다는 안내를 추가함.
 - 2026-09-18: 공개 `web5`에서 안내 확인 버튼이 입력 전까지 화면을 유지하고, 클릭 후에만 진행되는 것을 직접 확인함. EEG 준비 화면의 trial별 자동 marker/수동 TRIGGER 구분 안내와 100-seed 자동검사 PASS도 확인함.
 - 2026-09-18: 연습 피드백과 중앙 응답 화면이 겹친 사용자 제보를 확인함. 화면 내용상 서로 다른 trial 단계가 동시에 실행된 것으로 판단하여 시작 버튼 1회성 처리, `practice`/`recorded_session` 실행 잠금, 피드백 전후 overlay·canvas 정리를 `web6`에 추가함.
-- 2026-09-18: 수정 후 `npm test`, `node --check js/app.js`, `git diff --check` PASS. 공개 Pages 연속 클릭 검증은 배포 후 수행 예정.
+- 2026-09-18: 수정 후 `npm test`, `node --check js/app.js`, `git diff --check` PASS. GitHub Actions run #8 성공.
+- 2026-09-18: 공개 `web6`에서 시작 버튼을 연속 클릭해도 즉시 disabled/busy 상태가 되어 두 번째 실행이 차단됨을 확인함. 공개 페이지 버전과 100-seed 48-trial 자동검사 PASS도 재확인함.
+- 원격 QA 브라우저에는 이전 미완료 체크포인트가 남아 있어 새 연습 세션 전체를 끝까지 반복하지 못했다. 실제 실험용 컴퓨터에서 6-trial pilot을 새 session ID로 실행해 최종 체감 성능을 확인해야 한다.
 - 원격 QA 환경에서는 전체화면 API가 거부되어 `FULLSCREEN_REQUEST_FAILED`가 기록됨. 실제 실험용 Chrome/Edge에서 전체화면과 geometry를 별도 확인해야 함.
