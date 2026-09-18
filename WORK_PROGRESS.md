@@ -58,4 +58,5 @@
 - 2026-09-15: GitHub Actions run #4 성공, 공개 Pages에서 `v2026.09.15-web4` 확인, 배포 화면의 100-seed 자동검사 PASS.
 - 2026-09-18: 설명 화면이 빨리 넘어간다는 사용성 피드백을 반영해 모든 과제·calibration 안내에 “이해했습니다” 버튼/SPACE 확인 게이트를 추가함.
 - 2026-09-18: 매 trial의 시작·응답·종료는 웹 marker로 자동 기록하고, MeasureWiz 수동 TRIGGER는 세션/블록 기준점에서만 누른다는 안내를 추가함.
+- 2026-09-18: 공개 `web5`에서 안내 확인 버튼이 입력 전까지 화면을 유지하고, 클릭 후에만 진행되는 것을 직접 확인함. EEG 준비 화면의 trial별 자동 marker/수동 TRIGGER 구분 안내와 100-seed 자동검사 PASS도 확인함.
 - 원격 QA 환경에서는 전체화면 API가 거부되어 `FULLSCREEN_REQUEST_FAILED`가 기록됨. 실제 실험용 Chrome/Edge에서 전체화면과 geometry를 별도 확인해야 함.
