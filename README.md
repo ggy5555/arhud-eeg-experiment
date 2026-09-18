@@ -12,7 +12,7 @@
 - 설치 없이 Chrome/Edge에서 열 수 있다.
 - 로컬 실행이 필요하면 저장소 폴더에서 `python -m http.server 8000`을 실행하고 `http://localhost:8000`을 연다.
 
-사이트가 순서대로 `세션 설정 → 환경 점검 → 응답키 점검 → 연습 → EEG 녹화·동기화 → calibration → 본실험 → 파일 다운로드`를 안내한다.
+사이트가 순서대로 `세션 설정 → 환경 점검 → 응답키 점검 → 연습 → EEG 녹화·동기화 → calibration → 본실험 → 파일 다운로드`를 안내한다. 과제·보정 설명 화면은 자동으로 넘어가지 않으며, 참가자 또는 실험자가 **“이해했습니다” 버튼이나 SPACE**로 확인해야 다음 단계가 시작된다.
 
 ## 최종 고정 프로토콜
 
@@ -42,7 +42,9 @@ Randomization은 참가자 ID와 session ID로부터 재현 가능한 seed를 �
 
 ## EEG 동기화의 범위
 
-사이트는 MeasureWiz와 직접 통신하거나 장비 파일에 hardware marker를 삽입하지 않는다. 동기화 화면에서 흰색 플래시와 안내가 나타나면 실험자가 MeasureWiz 앱의 `TRIGGER`를 누르고 `SPACE`로 확인한다. 사이트는 같은 순간의 `SYNC_TRIGGER_REQUEST`와 확인 시각을 marker CSV에 남긴다.
+사이트는 MeasureWiz와 직접 통신하거나 장비 파일에 hardware marker를 삽입하지 않는다. 동기화 화면에서 흰색 플래시와 안내가 나타나면 실험자가 MeasureWiz 앱의 `TRIGGER`를 누르고 화면의 **“TRIGGER를 눌렀습니다”** 버튼 또는 `SPACE`로 확인한다. 사이트는 같은 순간의 `SYNC_TRIGGER_REQUEST`와 확인 시각을 marker CSV에 남긴다.
+
+MeasureWiz의 수동 `TRIGGER`를 48개 문제마다 누르지 않는다. 사이트가 각 trial의 `TASK_ONSET`, `PRIMARY_RESPONSE`, `CUE_RESPONSE`, `TRIAL_END`를 자동 기록한다. 수동 TRIGGER는 세션 시작, 본실험 시작, 2블록 시작, 세션 종료에만 사용하여 두 시간축의 offset과 drift를 추정한다.
 
 따라서 이 방식의 정확도는 아직 확정되지 않았다. 실제 pilot에서 MeasureWiz CSV의 trigger 표현, 사이트 marker와의 offset, 기록 중 drift를 확인한 뒤 분석 adapter를 확정해야 한다. 장비 sampling rate·channel name·reference·filter·artifact threshold는 이 웹사이트가 추측하거나 설정하지 않는다.
 

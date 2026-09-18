@@ -7,7 +7,7 @@ import {
   TIMING_MS,
   eccentricityFor,
   validateIdentifier,
-} from "./config.js?v=20260915-web4";
+} from "./config.js?v=20260915-web5";
 
 export function mulberry32(seed) {
   let value = seed >>> 0;

@@ -8,20 +8,20 @@ import {
   STUDY_TITLE,
   TIMING_MS,
   validateIdentifier,
-} from "./config.js?v=20260915-web4";
+} from "./config.js?v=20260915-web5";
 import {
   deriveParticipantSeed,
   generateMainTrials,
   generateNBackTrials,
   generatePilotTrials,
   validateMainSchedule,
-} from "./randomization.js?v=20260915-web4";
+} from "./randomization.js?v=20260915-web5";
 import {
   SessionStore,
   discardIncompleteCheckpoint,
   downloadIncompleteCheckpoint,
   getIncompleteCheckpoint,
-} from "./data.js?v=20260915-web4";
+} from "./data.js?v=20260915-web5";
 import {
   drawBlank,
   drawDigit,
@@ -30,7 +30,7 @@ import {
   drawResponsePrompt,
   drawSyncFlash,
   drawTrial,
-} from "./stimuli.js?v=20260915-web4";
+} from "./stimuli.js?v=20260915-web5";
 
 const QA_MODE = new URLSearchParams(location.search).get("qa") === "1";
 const TIME_SCALE = QA_MODE ? 0.003 : 1;
@@ -128,6 +128,10 @@ function hideExperiment() {
 
 function messageHtml(title, body = "", timer = "") {
   return `<div class="message-inner"><h2>${escapeHtml(title)}</h2>${body ? `<p>${escapeHtml(body)}</p>` : ""}${timer ? `<div class="timer">${escapeHtml(timer)}</div>` : ""}</div>`;
+}
+
+function acknowledgementHtml(title, body = "", confirmLabel = "내용을 이해했습니다 · 계속") {
+  return `<div class="message-inner acknowledgement-card"><h2>${escapeHtml(title)}</h2>${body ? `<p>${escapeHtml(body)}</p>` : ""}<button id="acknowledgeButton" class="button primary acknowledgement-button" type="button">${escapeHtml(confirmLabel)}</button><div class="acknowledgement-hint">버튼을 누르거나 SPACE 키를 누르면 다음 단계로 진행합니다.</div></div>`;
 }
 
 function sleep(ms) {
@@ -269,9 +273,53 @@ function collectKey(validKeys, durationMs, autoKey = null) {
   });
 }
 
-function waitForSpace(title = "SPACE를 눌러 계속", body = "", badge = "SPACE · P=일시정지") {
-  showExperiment(messageHtml(title, body), badge);
-  return collectKey([" "], 24 * 60 * 60 * 1000, QA_MODE ? " " : null);
+async function waitForSpace(
+  title = "안내 확인",
+  body = "",
+  badge = "확인 버튼 또는 SPACE · P=일시정지",
+  confirmLabel = "내용을 이해했습니다 · 계속",
+) {
+  while (true) {
+    showExperiment(acknowledgementHtml(title, body, confirmLabel), badge);
+    const button = document.querySelector("#acknowledgeButton");
+    const started = performance.now();
+    const result = await new Promise((resolve) => {
+      let settled = false;
+      let timer = null;
+      const finish = (method) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        window.removeEventListener("keydown", onKey, true);
+        button?.removeEventListener("click", onClick);
+        state.currentKeyCancel = null;
+        resolve({ method, rtSeconds: (performance.now() - started) / 1000 });
+      };
+      const onKey = (event) => {
+        if (event.repeat || event.key !== " ") return;
+        event.preventDefault();
+        finish("space");
+      };
+      const onClick = () => finish("button");
+      window.addEventListener("keydown", onKey, true);
+      button?.addEventListener("click", onClick);
+      timer = setTimeout(() => finish("timeout"), scaled(24 * 60 * 60 * 1000));
+      state.currentKeyCancel = () => finish("cancelled");
+      if (QA_MODE) queueMicrotask(() => finish("qa_auto"));
+    });
+    if (result.method === "cancelled" && state.paused) {
+      await waitWhilePaused();
+      continue;
+    }
+    if (["button", "space", "qa_auto"].includes(result.method)) {
+      state.store?.addEvent("INSTRUCTION_ACKNOWLEDGED", {
+        title,
+        method: result.method,
+        response_time_s: Number(result.rtSeconds.toFixed(6)),
+      });
+    }
+    return result;
+  }
 }
 
 async function countdownMessage(title, body, durationMs, eventPrefix = null) {
@@ -439,9 +487,13 @@ function renderPreparation() {
 async function runGeometryCheck() {
   await requestFullscreen();
   state.monitor.viewportWidthPx = window.innerWidth;
-  showExperiment(messageHtml("위치·길이 검증", "점 여섯 개의 위치와 왼쪽 아래 5 cm 눈금을 확인한 뒤 SPACE를 누르세요."), "CENTER 0° · N 2.39°");
   drawGeometry(canvas, state.monitor);
-  await collectKey([" "], 24 * 60 * 60 * 1000, QA_MODE ? " " : null);
+  await waitForSpace(
+    "위치·길이 검증",
+    "점 여섯 개의 위치와 왼쪽 아래 5 cm 눈금을 실제로 확인하세요.",
+    "CENTER 0° · N 2.39°",
+    "위치와 5 cm 눈금을 확인했습니다",
+  );
   hideExperiment();
   await exitFullscreen();
   cleanScreen();
@@ -483,7 +535,7 @@ function renderKeyCheck() {
 function runPracticeIntro() {
   cleanScreen();
   setProgress("연습", 3, 7);
-  app.innerHTML = `<section class="panel"><span class="eyebrow">04 · Practice</span><h2>6회 연습 후 EEG 준비로 이동</h2><p>중앙의 두 연결 패턴이 같으면 F, 다르면 J를 누릅니다. 다음 화면에서는 방금 본 화살표 방향을 방향키로 응답합니다.</p><div class="notice">연습 자료는 <strong>PRACTICE</strong>로 분리되며 본실험·통계 자료에 포함되지 않습니다.</div><div class="button-row"><button id="practiceStart" class="button primary">전체화면 연습 시작</button></div></section>`;
+  app.innerHTML = `<section class="panel"><span class="eyebrow">04 · Practice</span><h2>6회 연습 후 EEG 준비로 이동</h2><p>중앙의 두 연결 패턴이 같으면 F, 다르면 J를 누릅니다. 다음 화면에서는 방금 본 화살표 방향을 방향키로 응답합니다.</p><div class="notice">연습 자료는 <strong>PRACTICE</strong>로 분리되며 본실험·통계 자료에 포함되지 않습니다.</div><div class="button-row"><button id="practiceStart" class="button primary">설명을 이해했습니다 · 전체화면 연습 시작</button></div></section>`;
   document.querySelector("#practiceStart").addEventListener("click", runPractice);
 }
 
@@ -512,7 +564,7 @@ function renderEegPreparation() {
   setProgress("EEG 준비", 4, 7);
   setStatus("EEG 준비", "ready");
   const name = `${state.setup.participant}_${state.setup.session}`;
-  app.innerHTML = `<section class="panel"><span class="eyebrow">05 · EEG recording</span><h2>MeasureWiz 녹화 준비</h2><div class="notice danger">앱의 ‘스트레스 측정 패러다임’이 아니라 <strong>생체신호 측정 → EEG → 녹화 시작</strong>을 사용합니다. 장비별 조작은 공식 매뉴얼을 따르세요.</div><div class="checklist"><label class="check-item"><input type="checkbox" data-eeg><span>전극과 연결 상태를 확인함<small>확정 부착안: SIG 이마 왼편 / REF 귀 뒤 뼈 / GND 이마 중앙</small></span></label><label class="check-item"><input type="checkbox" data-eeg><span>Raw EEG 파형과 신호 상태를 확인함</span></label><label class="check-item"><input type="checkbox" data-eeg><span>EEG 녹화를 시작함</span></label><label class="check-item"><input type="checkbox" data-eeg><span>EEG 파일 식별자를 <strong>${escapeHtml(name)}</strong>와 맞춤</span></label></div><div class="notice">버튼을 누르면 10초 안정화 후 동기화 화면이 나타납니다. 화면의 “지금 TRIGGER” 신호에 맞춰 MeasureWiz 앱의 TRIGGER를 한 번 누르세요.</div><div class="button-row"><button id="syncStart" class="button primary" disabled>10초 안정화·동기화 시작</button><button id="eegCancel" class="button danger">세션 중단</button></div></section>`;
+  app.innerHTML = `<section class="panel"><span class="eyebrow">05 · EEG recording</span><h2>MeasureWiz 녹화 준비</h2><div class="notice danger">앱의 ‘스트레스 측정 패러다임’이 아니라 <strong>생체신호 측정 → EEG → 녹화 시작</strong>을 사용합니다. 장비별 조작은 공식 매뉴얼을 따르세요.</div><div class="checklist"><label class="check-item"><input type="checkbox" data-eeg><span>전극과 연결 상태를 확인함<small>확정 부착안: SIG 이마 왼편 / REF 귀 뒤 뼈 / GND 이마 중앙</small></span></label><label class="check-item"><input type="checkbox" data-eeg><span>Raw EEG 파형과 신호 상태를 확인함</span></label><label class="check-item"><input type="checkbox" data-eeg><span>EEG 녹화를 시작함</span></label><label class="check-item"><input type="checkbox" data-eeg><span>EEG 파일 식별자를 <strong>${escapeHtml(name)}</strong>와 맞춤</span></label></div><div class="notice">버튼을 누르면 10초 안정화 후 동기화 화면이 나타납니다. <strong>MeasureWiz의 TRIGGER는 매 문제마다 누르지 않습니다.</strong> 사이트에 “지금 TRIGGER”가 표시될 때만 앱의 TRIGGER를 한 번 누르세요.</div><div class="notice success">각 문제의 시작·중앙 응답·화살표 응답·종료 시점은 사이트가 marker CSV에 자동으로 기록합니다. 수동 TRIGGER는 세션 시작·본실험 시작·2블록 시작·세션 종료의 시간축 정렬 지점으로 사용합니다.</div><div class="button-row"><button id="syncStart" class="button primary" disabled>10초 안정화·동기화 시작</button><button id="eegCancel" class="button danger">세션 중단</button></div></section>`;
   const boxes = [...document.querySelectorAll("[data-eeg]")];
   const update = () => { document.querySelector("#syncStart").disabled = !boxes.every((box) => box.checked); };
   boxes.forEach((box) => box.addEventListener("change", update));
@@ -532,8 +584,12 @@ async function runSyncPrompt(label, stabilizeMs = 10_000) {
   beep(1100, 180);
   await sleep(180);
   drawBlank(canvas);
-  showExperiment(messageHtml("지금 TRIGGER", "MeasureWiz 앱에서 TRIGGER를 한 번 누른 뒤 SPACE를 누르세요."), `${label} · web onset ${onset.toFixed(3)} s`);
-  await collectKey([" "], 24 * 60 * 60 * 1000, QA_MODE ? " " : null);
+  await waitForSpace(
+    "지금 TRIGGER",
+    "MeasureWiz 앱에서 TRIGGER를 한 번 누르세요. 매 trial마다 누르는 것이 아니라, 이 안내 화면이 나타날 때만 누릅니다.",
+    `${label} · web onset ${onset.toFixed(3)} s`,
+    "TRIGGER를 눌렀습니다",
+  );
   state.store.emit("SYNC_TRIGGER_CONFIRMED", `SYNC_${label}`, "NONE", "synchronization", { label, requestOnset: onset });
   await sleep(250);
 }
@@ -546,7 +602,12 @@ async function beginRecordedSession() {
     await runSyncPrompt("SESSION_START");
     await runCalibration();
     await runSyncPrompt("MAIN_START", 3000);
-    await waitForSpace(state.setup.mode === "main" ? "본실험 1블록을 시작하려면 SPACE" : "6-trial 파일럿을 시작하려면 SPACE");
+    await waitForSpace(
+      state.setup.mode === "main" ? "본실험 1블록 시작 전 확인" : "6-trial 파일럿 시작 전 확인",
+      "중앙 과제는 F/J, 화살표 과제는 방향키로 응답합니다. trial 시작·응답·끝 marker는 사이트가 자동 저장하므로 MeasureWiz TRIGGER를 매 문제마다 누르지 마세요.",
+      "과제 규칙 확인",
+      state.setup.mode === "main" ? "이해했습니다 · 1블록 시작" : "이해했습니다 · 파일럿 시작",
+    );
     await runScheduledTrials();
     await runSyncPrompt("SESSION_END", 1000);
     state.store.emit("RUN_END", `${state.setup.participant}_${state.setup.session}_RUN`, "NONE", "operator", { status: "COMPLETE" });
@@ -559,7 +620,12 @@ async function beginRecordedSession() {
 }
 
 async function timedCalibrationPhase(title, body, durationMs, startEvent, endEvent) {
-  await waitForSpace(title, `${body} 준비되면 SPACE를 누르세요.`, "EEG calibration · SPACE · P=일시정지");
+  await waitForSpace(
+    title,
+    `${body} 설명을 이해하고 준비가 되면 아래 버튼을 누르세요.`,
+    "EEG calibration · 확인 버튼 또는 SPACE · P=일시정지",
+    "설명을 이해했습니다 · 시작",
+  );
   await countdownMessage("3초 뒤 시작", title, 3000);
   drawFixation(canvas);
   experimentMessage.innerHTML = "";
@@ -576,8 +642,9 @@ async function runCalibration() {
 
   await waitForSpace(
     "눈 감음 30초",
-    "시작 신호 뒤 눈을 감고, 종료음이 들리면 다시 뜨세요. 준비되면 SPACE를 누르세요.",
-    "EEG calibration · SPACE · P=일시정지",
+    "시작 신호 뒤 눈을 감고, 종료음이 들리면 다시 뜨세요. 설명을 이해하고 준비가 되면 아래 버튼을 누르세요.",
+    "EEG calibration · 확인 버튼 또는 SPACE · P=일시정지",
+    "설명을 이해했습니다 · 시작",
   );
   await countdownMessage("3초 뒤 눈을 감으세요", "종료음이 들릴 때까지 유지", 3000);
   drawBlank(canvas);
@@ -603,7 +670,12 @@ async function runNBack(level) {
   const body = level === 0
     ? "숫자가 0이면 F(SAME), 아니면 J(DIFFERENT)를 누르세요."
     : "현재 숫자가 두 칸 전 숫자와 같으면 F(SAME), 다르면 J(DIFFERENT)를 누르세요.";
-  await waitForSpace(title, `${body} 시작하려면 SPACE를 누르세요.`, "15 trials · 60초 · P=일시정지");
+  await waitForSpace(
+    title,
+    `${body} 규칙을 이해했으면 아래 버튼을 누르세요.`,
+    "15 trials · 60초 · P=일시정지",
+    "규칙을 이해했습니다 · 시작",
+  );
   experimentMessage.innerHTML = "";
   const trials = generateNBackTrials(level, state.seed);
   for (const trial of trials) {
@@ -656,7 +728,12 @@ async function runScheduledTrials() {
       await countdownMessage("블록 휴식", "움직임을 줄이고 전극·EEG recording 상태를 확인하세요.", TIMING_MS.blockBreak);
       state.store.emit("BLOCK_BREAK_END", "BLOCK_01_BREAK", "NONE", "main", { block: 1 });
       await runSyncPrompt("BLOCK2_START", 3000);
-      await waitForSpace("2블록을 시작하려면 SPACE");
+      await waitForSpace(
+        "2블록 시작 전 확인",
+        "참가자 상태와 EEG recording을 확인하세요. 다음 trial들의 시작·끝 marker는 사이트가 자동으로 저장합니다.",
+        "Block 2 · 확인 버튼 또는 SPACE",
+        "확인했습니다 · 2블록 시작",
+      );
     }
   }
   setProgress("자료 마무리", total, total);

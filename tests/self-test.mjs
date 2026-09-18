@@ -1,4 +1,5 @@
 import { webcrypto } from "node:crypto";
+import { readFileSync } from "node:fs";
 globalThis.crypto ??= webcrypto;
 
 import {
@@ -77,4 +78,12 @@ const markerCsv = rowsToCsv([{
 assert(markerCsv.includes("TASK_ONSET"), "marker CSV data missing");
 assert(markerCsv.includes(MARKER_COLUMNS.join(",")), "marker CSV header mismatch");
 
-console.log("PASS: 48-trial randomization, geometry, connector, calibration and CSV contracts");
+const appSource = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
+const styleSource = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+assert(appSource.includes('id="acknowledgeButton"'), "instruction acknowledgement button missing");
+assert(appSource.includes("INSTRUCTION_ACKNOWLEDGED"), "instruction acknowledgement event missing");
+assert(appSource.includes("매 문제마다 누르지 않습니다"), "manual TRIGGER guidance missing");
+assert(styleSource.includes(".experiment-message .acknowledgement-button"), "acknowledgement button style missing");
+assert(styleSource.includes("pointer-events: auto"), "acknowledgement button is not clickable");
+
+console.log("PASS: 48-trial randomization, geometry, connector, calibration, acknowledgement and CSV contracts");

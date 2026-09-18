@@ -14,8 +14,10 @@
 - 6조건×8회=48 trials, 2 blocks×24 trials
 - 조건·SAME/DIFF·cue 방향 균형과 같은 위치 3회 연속 금지
 - F/J/방향키 사전 점검과 6회 연습
+- 과제·calibration 설명을 읽은 뒤 “이해했습니다” 버튼 또는 SPACE로 진행하는 수동 확인 게이트
 - eyes-open, eyes-closed, 0-back, rest, 2-back calibration 화면
-- 시작·block2·종료 수동 TRIGGER 동기화 안내
+- 세션 시작·본실험 시작·block2 시작·세션 종료의 수동 TRIGGER 동기화 안내
+- 매 trial의 시작·응답·종료는 웹 marker로 자동 저장하고 수동 TRIGGER는 매 trial마다 누르지 않는다는 안내
 - 행동·calibration·practice·schedule CSV, marker CSV, session JSON 로컬 저장
 - `EMPIRICAL`/`PILOT`/`PRACTICE`/`DRY_RUN_QA` 분리
 - 중단·예외·전체화면 이탈 시 체크포인트 및 부분 자료 보존

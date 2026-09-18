@@ -3,7 +3,7 @@ import {
   BEHAVIOR_COLUMNS,
   CALIBRATION_BEHAVIOR_COLUMNS,
   MARKER_COLUMNS,
-} from "./config.js?v=20260915-web4";
+} from "./config.js?v=20260915-web5";
 
 const CHECKPOINT_KEY = "arhud-eeg-incomplete-session-v1";
 const COMPLETED_KEY = "arhud-eeg-completed-session-ids-v1";
