@@ -36,6 +36,8 @@
 
 배포된 `web3`에서 브라우저 전체 QA를 완료했다. 종료 화면에서 48 main/pilot rows, 30 calibration rows, 386 markers, `COMPLETE`, 6종 다운로드 항목을 확인했다. QA 중 0-back/2-back 안내 overlay가 숫자 자극을 가리는 문제를 발견하여 `web4`에서 수정했다. GitHub Actions run #4가 성공했고, 공개 `web4` 화면에서 100개 seed 자동검사 PASS를 재확인했다.
 
+`web6`에서는 사용자 제보 화면을 근거로 중복 실험 루프를 차단했다. 시작 버튼 연속 클릭 시 첫 입력 직후 버튼이 disabled/busy 상태가 되는 것을 공개 Pages에서 확인했고, 100개 seed 자동검사와 GitHub Actions run #8도 PASS했다. 실제 실험용 컴퓨터에서 6-trial pilot을 새 session ID로 실행하여 화면 겹침이 재발하지 않는지 마지막으로 확인해야 한다.
+
 원격 QA 브라우저에서는 전체화면 API가 허용되지 않아 `FULLSCREEN_REQUEST_FAILED`가 기록되었다. **실제 실험용 컴퓨터의 Chrome/Edge에서 geometry, 전체화면, 응답키, 6-trial pilot을 직접 확인하는 절차는 여전히 필수**다.
 
 ## ⚠️ 장비 확인 후 필요
