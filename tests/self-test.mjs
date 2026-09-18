@@ -83,7 +83,12 @@ const styleSource = readFileSync(new URL("../styles.css", import.meta.url), "utf
 assert(appSource.includes('id="acknowledgeButton"'), "instruction acknowledgement button missing");
 assert(appSource.includes("INSTRUCTION_ACKNOWLEDGED"), "instruction acknowledgement event missing");
 assert(appSource.includes("매 문제마다 누르지 않습니다"), "manual TRIGGER guidance missing");
+assert(appSource.includes("DUPLICATE_RUN_BLOCKED"), "duplicate run protection event missing");
+assert(appSource.includes('acquireRunLock("practice")'), "practice run lock missing");
+assert(appSource.includes('acquireRunLock("recorded_session")'), "recorded-session run lock missing");
+assert(appSource.includes("markButtonBusy"), "one-shot start button protection missing");
+assert(appSource.includes("clearExperimentOverlay();"), "experiment overlay cleanup missing");
 assert(styleSource.includes(".experiment-message .acknowledgement-button"), "acknowledgement button style missing");
 assert(styleSource.includes("pointer-events: auto"), "acknowledgement button is not clickable");
 
-console.log("PASS: 48-trial randomization, geometry, connector, calibration, acknowledgement and CSV contracts");
+console.log("PASS: 48-trial randomization, geometry, connector, calibration, single-run guard, acknowledgement and CSV contracts");

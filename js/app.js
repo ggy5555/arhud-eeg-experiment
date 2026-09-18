@@ -8,20 +8,20 @@ import {
   STUDY_TITLE,
   TIMING_MS,
   validateIdentifier,
-} from "./config.js?v=20260915-web5";
+} from "./config.js?v=20260918-web6";
 import {
   deriveParticipantSeed,
   generateMainTrials,
   generateNBackTrials,
   generatePilotTrials,
   validateMainSchedule,
-} from "./randomization.js?v=20260915-web5";
+} from "./randomization.js?v=20260918-web6";
 import {
   SessionStore,
   discardIncompleteCheckpoint,
   downloadIncompleteCheckpoint,
   getIncompleteCheckpoint,
-} from "./data.js?v=20260915-web5";
+} from "./data.js?v=20260918-web6";
 import {
   drawBlank,
   drawDigit,
@@ -30,7 +30,7 @@ import {
   drawResponsePrompt,
   drawSyncFlash,
   drawTrial,
-} from "./stimuli.js?v=20260915-web5";
+} from "./stimuli.js?v=20260918-web6";
 
 const QA_MODE = new URLSearchParams(location.search).get("qa") === "1";
 const TIME_SCALE = QA_MODE ? 0.003 : 1;
@@ -70,6 +70,7 @@ const state = {
   integrityFlags: new Set(),
   currentKeyCancel: null,
   cleanup: null,
+  runLock: null,
 };
 
 function scaled(ms) {
@@ -122,8 +123,40 @@ function showExperiment(message = "", badge = "") {
 
 function hideExperiment() {
   experimentLayer.hidden = true;
-  experimentMessage.innerHTML = "";
+  experimentMessage.replaceChildren();
   experimentBadge.textContent = "";
+}
+
+function clearExperimentOverlay() {
+  experimentMessage.replaceChildren();
+  experimentBadge.textContent = "";
+}
+
+function acquireRunLock(label) {
+  if (state.runLock) {
+    state.store?.addEvent("DUPLICATE_RUN_BLOCKED", {
+      requested_run: label,
+      active_run: state.runLock,
+    });
+    showToast("이미 실험 단계가 진행 중입니다. 버튼을 다시 누르지 마세요.");
+    return false;
+  }
+  state.runLock = label;
+  return true;
+}
+
+function releaseRunLock(label = null) {
+  if (label && state.runLock !== label) return;
+  state.runLock = null;
+}
+
+function markButtonBusy(button, label) {
+  if (!button || button.dataset.busy === "true") return false;
+  button.dataset.busy = "true";
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  if (label) button.textContent = label;
+  return true;
 }
 
 function messageHtml(title, body = "", timer = "") {
@@ -466,7 +499,8 @@ function renderPreparation() {
   };
   app.querySelectorAll("input").forEach((input) => input.addEventListener("input", update));
   document.querySelector("#backHome").addEventListener("click", renderHome);
-  document.querySelector("#preflightNext").addEventListener("click", async () => {
+  document.querySelector("#preflightNext").addEventListener("click", async (event) => {
+    if (!markButtonBusy(event.currentTarget, geometryOnly ? "위치 검증 여는 중…" : "응답키 점검 여는 중…")) return;
     state.monitor = { widthCm, distanceCm, resolution, viewportWidthPx: window.innerWidth };
     if (geometryOnly) return runGeometryCheck();
     try {
@@ -536,10 +570,14 @@ function runPracticeIntro() {
   cleanScreen();
   setProgress("연습", 3, 7);
   app.innerHTML = `<section class="panel"><span class="eyebrow">04 · Practice</span><h2>6회 연습 후 EEG 준비로 이동</h2><p>중앙의 두 연결 패턴이 같으면 F, 다르면 J를 누릅니다. 다음 화면에서는 방금 본 화살표 방향을 방향키로 응답합니다.</p><div class="notice">연습 자료는 <strong>PRACTICE</strong>로 분리되며 본실험·통계 자료에 포함되지 않습니다.</div><div class="button-row"><button id="practiceStart" class="button primary">설명을 이해했습니다 · 전체화면 연습 시작</button></div></section>`;
-  document.querySelector("#practiceStart").addEventListener("click", runPractice);
+  document.querySelector("#practiceStart").addEventListener("click", (event) => {
+    if (!markButtonBusy(event.currentTarget, "연습 화면 여는 중…")) return;
+    runPractice();
+  });
 }
 
 async function runPractice() {
+  if (!acquireRunLock("practice")) return;
   state.running = true;
   state.abortRequested = false;
   await requestFullscreen();
@@ -553,6 +591,7 @@ async function runPractice() {
       throwIfAborted();
     }
     state.running = false;
+    releaseRunLock("practice");
     hideExperiment();
     await exitFullscreen();
     renderEegPreparation();
@@ -568,7 +607,10 @@ function renderEegPreparation() {
   const boxes = [...document.querySelectorAll("[data-eeg]")];
   const update = () => { document.querySelector("#syncStart").disabled = !boxes.every((box) => box.checked); };
   boxes.forEach((box) => box.addEventListener("change", update));
-  document.querySelector("#syncStart").addEventListener("click", beginRecordedSession);
+  document.querySelector("#syncStart").addEventListener("click", (event) => {
+    if (!markButtonBusy(event.currentTarget, "실험 화면 여는 중…")) return;
+    beginRecordedSession();
+  });
   document.querySelector("#eegCancel").addEventListener("click", async () => {
     state.store.complete("ABORTED_BEFORE_EEG_TASK");
     renderCompletion("실험 시작 전 중단됨");
@@ -595,6 +637,7 @@ async function runSyncPrompt(label, stabilizeMs = 10_000) {
 }
 
 async function beginRecordedSession() {
+  if (!acquireRunLock("recorded_session")) return;
   state.running = true;
   state.abortRequested = false;
   setStatus("EEG recording 진행", "running");
@@ -613,6 +656,7 @@ async function beginRecordedSession() {
     state.store.emit("RUN_END", `${state.setup.participant}_${state.setup.session}_RUN`, "NONE", "operator", { status: "COMPLETE" });
     state.store.complete("COMPLETE");
     state.running = false;
+    releaseRunLock("recorded_session");
     hideExperiment();
     await exitFullscreen();
     renderCompletion("실험 완료");
@@ -628,7 +672,7 @@ async function timedCalibrationPhase(title, body, durationMs, startEvent, endEve
   );
   await countdownMessage("3초 뒤 시작", title, 3000);
   drawFixation(canvas);
-  experimentMessage.innerHTML = "";
+  clearExperimentOverlay();
   state.store.emit(startEvent, `CAL_${startEvent}`, "NONE", "calibration_qc");
   await sleep(durationMs);
   await waitWhilePaused();
@@ -648,7 +692,7 @@ async function runCalibration() {
   );
   await countdownMessage("3초 뒤 눈을 감으세요", "종료음이 들릴 때까지 유지", 3000);
   drawBlank(canvas);
-  experimentMessage.innerHTML = "";
+  clearExperimentOverlay();
   beep(660, 120);
   state.store.emit("QC_EYES_CLOSED_ONSET", "CAL_EYES_CLOSED", "NONE", "calibration_qc");
   await sleep(CALIBRATION.eyesClosedMs);
@@ -676,7 +720,7 @@ async function runNBack(level) {
     "15 trials · 60초 · P=일시정지",
     "규칙을 이해했습니다 · 시작",
   );
-  experimentMessage.innerHTML = "";
+  clearExperimentOverlay();
   const trials = generateNBackTrials(level, state.seed);
   for (const trial of trials) {
     throwIfAborted();
@@ -745,7 +789,7 @@ async function runTaskTrial(trial, { kind, feedback }) {
   const dataOrigin = practice ? "PRACTICE" : state.store.meta.dataOrigin;
   const flagsBefore = currentFlags();
   state.store.emit(`${prefix}FIXATION_ONSET`, trial.trialId, trial.condition, practice ? "practice" : "main");
-  experimentMessage.innerHTML = "";
+  clearExperimentOverlay();
   drawFixation(canvas);
   await sleep(TIMING_MS.fixation);
   await waitWhilePaused();
@@ -810,14 +854,19 @@ async function runTaskTrial(trial, { kind, feedback }) {
   };
   if (feedback) {
     const ok = row.primary_correct && row.cue_correct;
+    drawBlank(canvas);
+    clearExperimentOverlay();
     showExperiment(messageHtml(ok ? "정답" : "응답 확인", `중앙: ${trial.primarySame ? "SAME" : "DIFFERENT"} · 화살표: ${trial.cueDirection}`), "연습 자료 · 본실험 제외");
     await sleep(700);
+    clearExperimentOverlay();
+    drawBlank(canvas);
   }
   return row;
 }
 
 async function handleRunError(error) {
   state.running = false;
+  releaseRunLock();
   state.store?.emit("RUN_ERROR", "RUN", "NONE", "operator", { message: String(error?.message || error) });
   state.store?.complete(error?.message === "RUN_ABORTED_BY_OPERATOR" ? "ABORTED" : "ERROR");
   hideExperiment();

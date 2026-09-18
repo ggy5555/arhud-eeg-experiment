@@ -21,6 +21,8 @@
 - 행동·calibration·practice·schedule CSV, marker CSV, session JSON 로컬 저장
 - `EMPIRICAL`/`PILOT`/`PRACTICE`/`DRY_RUN_QA` 분리
 - 중단·예외·전체화면 이탈 시 체크포인트 및 부분 자료 보존
+- 연습·본실험 시작 버튼의 중복 클릭 차단과 단일 실행 잠금
+- trial 전환 시 안내 overlay와 canvas를 명시적으로 정리하여 단계 간 화면 잔상 방지
 - 공개 저장소로 참가자 자료를 전송하는 코드 없음
 
 ## 🧪 실제 실행 확인
@@ -30,6 +32,7 @@
 - `node --check js/data.js`: PASS
 - `node --check js/stimuli.js`: PASS
 - 자동검사 범위: 48 trials, 2×24 blocks, 조건/정답/cue 균형, seed 재현성, 3연속 금지, 위치 반지름, connector, n-back, CSV header
+- `web6` 회귀검사: 중복 실행 잠금, 1회성 시작 버튼, overlay 정리 코드 계약 PASS
 
 배포된 `web3`에서 브라우저 전체 QA를 완료했다. 종료 화면에서 48 main/pilot rows, 30 calibration rows, 386 markers, `COMPLETE`, 6종 다운로드 항목을 확인했다. QA 중 0-back/2-back 안내 overlay가 숫자 자극을 가리는 문제를 발견하여 `web4`에서 수정했다. GitHub Actions run #4가 성공했고, 공개 `web4` 화면에서 100개 seed 자동검사 PASS를 재확인했다.
 
