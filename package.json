@@ -1,10 +1,9 @@
 {
   "name": "arhud-eeg-experiment",
-  "version": "1.0.0",
+  "version": "2026.11.09",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node tests/self-test.mjs"
+    "test": "node --test tests/*.test.js"
   }
 }
-

@@ -1,896 +1,366 @@
-import {
-  APP_VERSION,
-  BEHAVIOR_COLUMNS,
-  CALIBRATION,
-  CONDITIONS,
-  KEYS,
-  MARKER_COLUMNS,
-  STUDY_TITLE,
-  TIMING_MS,
-  validateIdentifier,
-} from "./config.js?v=20260918-web6";
-import {
-  deriveParticipantSeed,
-  generateMainTrials,
-  generateNBackTrials,
-  generatePilotTrials,
-  validateMainSchedule,
-} from "./randomization.js?v=20260918-web6";
-import {
-  SessionStore,
-  discardIncompleteCheckpoint,
-  downloadIncompleteCheckpoint,
-  getIncompleteCheckpoint,
-} from "./data.js?v=20260918-web6";
-import {
-  drawBlank,
-  drawDigit,
-  drawFixation,
-  drawGeometry,
-  drawResponsePrompt,
-  drawSyncFlash,
-  drawTrial,
-} from "./stimuli.js?v=20260918-web6";
+import {PROTOCOL_VERSION,CONDITION_ORDER,STATUS_NAMES,TRIAL_MS,REVEAL_MS,seedFor,createSchedule,createTrials,retryTrials,summarizeTrials,toCSV} from './protocol.js';
+import {parseMeasureWizCSV,mergeEEG,extractBandFeature} from './eeg.js';
+import {groupedCrossValidation,recommendFromPast} from './model.js';
 
-const QA_MODE = new URLSearchParams(location.search).get("qa") === "1";
-const TIME_SCALE = QA_MODE ? 0.003 : 1;
-const app = document.querySelector("#app");
-const canvas = document.querySelector("#stimulusCanvas");
-const experimentLayer = document.querySelector("#experimentLayer");
-const experimentMessage = document.querySelector("#experimentMessage");
-const experimentBadge = document.querySelector("#experimentBadge");
-const pauseLayer = document.querySelector("#pauseLayer");
-const progressWrap = document.querySelector("#progressWrap");
-const progressBar = document.querySelector("#progressBar");
-const progressLabel = document.querySelector("#progressLabel");
-const progressValue = document.querySelector("#progressValue");
-const statusDot = document.querySelector("#statusDot");
-const statusText = document.querySelector("#statusText");
-const toast = document.querySelector("#toast");
+const $ = selector => document.querySelector(selector);
+const $$ = selector => [...document.querySelectorAll(selector)];
+const STORAGE_KEY='yurip-workload-session-v1',LOCK_KEY='yurip-workload-active-lock-v1';
+const SCHEMA='yurip-workload-session-v1';
+const tabId=crypto.randomUUID?.()||`${Date.now()}-${Math.random()}`;
+const qaRequested=new URLSearchParams(location.search).get('qa')==='1';
+const esc=x=>String(x??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
+const iso=()=>new Date().toISOString();
+const round=n=>Number.isFinite(n)?Math.round(n*1000)/1000:null;
+let session=null,activeTimer=null,paintFrame=null,heartbeat=null,activeTrial=null,revealTimer=null;
+let analysisSession=null,eegFiles=[],merged=null,features={},mappingLog=[],cvResult=null,recommendation=null;
 
-document.querySelector("#versionLabel").textContent = `v${APP_VERSION}`;
-if (QA_MODE) {
-  const banner = document.createElement("div");
-  banner.className = "qa-banner";
-  banner.textContent = "QA ONLY · 단축 시간 · 연구 결과 사용 금지";
-  document.body.append(banner);
+function toast(message){const el=$('#toast');el.textContent=message;el.classList.remove('hidden');clearTimeout(toast.timer);toast.timer=setTimeout(()=>el.classList.add('hidden'),4200);}
+function persist(){
+  if(!session)return;
+  session.updated_at=iso();
+  try {localStorage.setItem(STORAGE_KEY,JSON.stringify(session));}
+  catch(error){toast('브라우저 저장에 실패했습니다. 현재 기록을 바로 내려받아 주세요.');console.error(error);}
+}
+function event(type,details={}) {
+  if(!session)return;
+  session.events.push({type,at:iso(),epoch_ms:Date.now(),performance_ms:round(performance.now()),time_origin_ms:round(performance.timeOrigin),...details});
+}
+function lockInfo(){try{return JSON.parse(localStorage.getItem(LOCK_KEY)||'null');}catch{return null;}}
+function acquireLock(){
+  const lock=lockInfo();
+  if(lock&&lock.owner!==tabId&&lock.expires>Date.now())return false;
+  localStorage.setItem(LOCK_KEY,JSON.stringify({owner:tabId,expires:Date.now()+10000}));
+  if(lockInfo()?.owner!==tabId)return false;
+  clearInterval(heartbeat);
+  heartbeat=setInterval(()=>{
+    const current=lockInfo();
+    if(current?.owner!==tabId){clearInterval(heartbeat);if(session?.stage==='running')interrupt('다른 탭에서 실행이 감지됨');return;}
+    localStorage.setItem(LOCK_KEY,JSON.stringify({owner:tabId,expires:Date.now()+10000}));
+  },2500);
+  return true;
+}
+function releaseLock(){clearInterval(heartbeat);heartbeat=null;if(lockInfo()?.owner===tabId)localStorage.removeItem(LOCK_KEY);}
+function formatCondition(plan){return plan?.label||CONDITION_ORDER.find(c=>c.id===plan?.condition)?.label||'확인 필요';}
+function sessionValid(data){return data&&data.schema===SCHEMA&&Array.isArray(data.schedule)&&Array.isArray(data.blocks)&&Array.isArray(data.events)&&typeof data.participant_id==='string';}
+function loadSaved(){try{const value=JSON.parse(localStorage.getItem(STORAGE_KEY)||'null');return sessionValid(value)?value:null;}catch{return null;}}
+function download(filename,content,type){const blob=new Blob([content],{type});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),1500);}
+function prefix(s){return `${s.participant_id}_${s.session_id}_${s.mode}`.replace(/[^A-Za-z0-9_-]/g,'_');}
+function downloadJSON(s=session){if(s)download(`${prefix(s)}_session.json`,JSON.stringify(s,null,2),'application/json;charset=utf-8');}
+function downloadTables(s=session){
+  if(!s)return;
+  const trialCols=['participant_id','session_id','mode','protocol_version','block_index','attempt','round','condition','difficulty','layout','block_status','flags','trial_number','kind','cycle','a','b','shown','target','states','truth','response','correct','rt_ms','onset_iso','onset_epoch_ms','onset_performance_ms','elapsed_start_ms','elapsed_end_ms','reveal_count','reveals'];
+  const trials=s.blocks.flatMap(b=>(b.trials||[]).map((t,i)=>({participant_id:s.participant_id,session_id:s.session_id,mode:s.mode,protocol_version:s.protocol_version,block_index:b.index,attempt:b.attempt,round:b.round,condition:b.condition,difficulty:b.difficulty,layout:b.layout,block_status:b.status,flags:b.flags,trial_number:i+1,...t,reveal_count:t.reveals?.length||0})));
+  const blockCols=['participant_id','session_id','mode','protocol_version','index','attempt','round','condition','difficulty','layout','status','flags','started_at','finished_at','rating','math_accuracy','math_median_correct_rt_ms','math_unanswered','status_accuracy','status_median_correct_rt_ms','status_unanswered','reveal_count','trigger_start_ack_at','trigger_end_ack_at'];
+  const blocks=s.blocks.map(b=>({participant_id:s.participant_id,session_id:s.session_id,mode:s.mode,protocol_version:s.protocol_version,...b,math_accuracy:b.summary?.math?.accuracy,math_median_correct_rt_ms:b.summary?.math?.median_correct_rt_ms,math_unanswered:b.summary?.math?.unanswered,status_accuracy:b.summary?.status?.accuracy,status_median_correct_rt_ms:b.summary?.status?.median_correct_rt_ms,status_unanswered:b.summary?.status?.unanswered,reveal_count:b.summary?.reveal_count}));
+  const eventCols=['participant_id','session_id','mode','type','at','epoch_ms','performance_ms','time_origin_ms','block_index','attempt','details'];
+  const events=s.events.map(e=>({participant_id:s.participant_id,session_id:s.session_id,mode:s.mode,...e,details:e.details||''}));
+  download(`${prefix(s)}_trials.csv`,toCSV(trialCols,trials),'text/csv;charset=utf-8');
+  setTimeout(()=>download(`${prefix(s)}_blocks.csv`,toCSV(blockCols,blocks),'text/csv;charset=utf-8'),180);
+  setTimeout(()=>download(`${prefix(s)}_markers.csv`,toCSV(eventCols,events),'text/csv;charset=utf-8'),360);
+  toast('브라우저에서 파일 여러 개의 다운로드를 허용해 주세요.');
+}
+function setView(name){
+  $$('.view').forEach(v=>v.classList.toggle('active',v.id===`view-${name}`));
+  $$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view===name));
+  $('#crumb').textContent={home:'실험 준비',analysis:'데이터 분석',guide:'진행 안내'}[name];
+  $('#app').classList.remove('hidden');$('#runner').classList.add('hidden');
+  if(name==='home')renderSaved();window.scrollTo(0,0);
+}
+$$('.nav-item').forEach(button=>button.addEventListener('click',()=>setView(button.dataset.view)));
+
+function renderSaved(){
+  const el=$('#saved-session');session=loadSaved()||session;
+  if(!session){el.classList.add('hidden');return;}
+  const finished=session.next_plan_index>=session.schedule.length;
+  const type={MAIN:'본실험',PILOT:'파일럿',QA:'자동 검사용',ADAPTIVE_DEMO:'선택 시연'}[session.mode]||session.mode;
+  el.classList.remove('hidden');el.innerHTML=`<div class="card-title"><div><h3>${finished?'저장된 세션':'진행 중인 세션'}</h3><p>${esc(session.participant_id)} · ${esc(session.session_id)} · ${esc(type)}</p></div><span class="round-icon">↗</span></div><p>완료 ${session.next_plan_index} / ${session.schedule.length} 블록. 익명 기록은 이 브라우저에 보관됩니다.</p><div class="button-row"><button class="button primary" id="resume-session" type="button">${finished?'결과 확인':'이어서 진행'} →</button><button class="button secondary" id="save-partial" type="button">JSON 저장 ↓</button></div>`;
+  $('#resume-session').addEventListener('click',()=>{session=loadSaved()||session;openRunner();});
+  $('#save-partial').addEventListener('click',()=>downloadJSON(session));
 }
 
-const state = {
-  setup: null,
-  monitor: null,
-  store: null,
-  schedule: [],
-  seed: null,
-  running: false,
-  paused: false,
-  pauseReason: null,
-  resumeResolver: null,
-  abortRequested: false,
-  integrityFlags: new Set(),
-  currentKeyCancel: null,
-  cleanup: null,
-  runLock: null,
+$('#setup-form').addEventListener('submit',e=>{
+  e.preventDefault();const participant=$('#participant').value.trim(),sessionCode=$('#session-code').value.trim();
+  if(!/^[A-Za-z0-9_-]{1,24}$/.test(participant)||!/^[A-Za-z0-9_-]{1,24}$/.test(sessionCode)){$('#setup-error').textContent='참가자와 세션 코드는 영문, 숫자, _ 또는 -만 사용해 주세요.';return;}
+  const existing=loadSaved();
+  if(existing&&!confirm('이 브라우저의 기존 세션이 교체됩니다. 필요한 경우 먼저 기존 JSON을 저장했나요?'))return;
+  if(existing)releaseLock();
+  const mode=qaRequested?'QA':$('#mode').value;
+  const seed=seedFor(`${participant}:${sessionCode}:${Date.now()}`);
+  session={schema:SCHEMA,protocol_version:PROTOCOL_VERSION,participant_id:participant,session_id:sessionCode,mode,seed,
+    created_at:iso(),updated_at:iso(),stage:'between',next_plan_index:0,schedule:createSchedule(seed,mode),blocks:[],events:[],active_block:null};
+  event('SESSION_CREATED',{details:qaRequested?'QA 자료: 연구 사용 금지':'실제 상태는 파일럿에서 확인'});persist();openRunner();
+});
+
+function runnerShell(){
+  $('#app').classList.add('hidden');$('#runner').classList.remove('hidden');
+  const label={MAIN:'본실험',PILOT:'파일럿',QA:'QA 테스트 · 연구 사용 금지',ADAPTIVE_DEMO:'화면 선택 시연'}[session.mode]||session.mode;
+  $('#runner-progress').textContent=`${label} · ${Math.min(session.next_plan_index+1,session.schedule.length)} / ${session.schedule.length}`;
+}
+function openRunner(){
+  if(!session)return;runnerShell();
+  if(session.stage==='running'){
+    const lock=lockInfo();
+    if(lock&&lock.owner!==tabId&&lock.expires>Date.now()){
+      $('#runner-content').innerHTML=`<div class="runner-center"><div class="phase-icon">!</div><h1>다른 탭에서 진행 중이에요</h1><p>동일한 세션을 두 탭에서 동시에 실행할 수 없습니다.</p><div class="button-row"><button class="button secondary" id="back-home">돌아가기</button></div></div>`;
+      $('#back-home').onclick=()=>setView('home');return;
+    }
+    recoverInterrupted();return;
+  }
+  if(session.stage==='end_sync'){renderEndSync();return;}
+  if(session.stage==='rating'){renderRating();return;}
+  if(session.next_plan_index>=session.schedule.length){renderFinish();return;}
+  renderBetween();
+}
+function renderBetween(){
+  session.stage='between';persist();runnerShell();const plan=session.schedule[session.next_plan_index];
+  const isFirst=session.next_plan_index===0;
+  const isRoundBreak=!isFirst&&plan.round!==session.schedule[session.next_plan_index-1]?.round;
+  $('#runner-content').innerHTML=`<div class="runner-center"><div class="phase-icon">${isRoundBreak?'☕':'◌'}</div><div class="phase-label">${isRoundBreak?'BREAK TIME':'READY FOR THE NEXT BLOCK'}</div><h1>${isRoundBreak?'잠깐 쉬어 가요':'실험을 시작할 준비가 됐나요?'}</h1><p>${isRoundBreak?'편하게 쉬고 준비되면 다음 블록으로 넘어가 주세요.':'산수와 상태 질문에 맞으면 F, 틀리면 J를 누릅니다.'}<br>간결 화면의 상태 질문에서는 스페이스바로 정보를 확인할 수 있어요.</p><div class="key-grid"><div class="key-card"><b>F</b>맞아요 · O</div><div class="key-card"><b>J</b>틀려요 · X</div><div class="key-card"><b>SPACE</b>정보 열기</div></div><p>다음: <b>${esc(formatCondition(plan))}</b><br>${session.mode==='QA'?'QA 단축 시간 · 연구 사용 금지':'한 블록 60초 · 이후 자기보고'}</p><div class="button-row"><button class="button primary" id="open-start-sync">다음 블록 준비 →</button><button class="button secondary" id="partial-save">기록 저장 ↓</button></div></div>`;
+  $('#open-start-sync').onclick=renderStartSync;$('#partial-save').onclick=()=>downloadJSON();
+}
+function renderStartSync(){
+  if(!acquireLock()){toast('다른 탭에서 실험이 진행 중입니다.');return;}
+  const plan=session.schedule[session.next_plan_index];
+  session.stage='start_sync';event('START_TRIGGER_REQUEST',{block_index:plan.index,details:'장비 앱에서 수동으로 시작 트리거를 누름'});persist();
+  $('#runner-content').innerHTML=`<div class="runner-center"><div class="phase-icon">◎</div><div class="phase-label">MANUAL TRIGGER · START</div><h1>장비 앱에서 시작 트리거를<br>눌러 주세요.</h1><p>MeasureWiz 앱의 <b>trigger point</b>를 누른 뒤<br>바로 아래 버튼을 누르면 1분 블록이 시작됩니다.</p><p class="field-help">사이트는 클릭 시각을 기록합니다. 앱과 PC의 실제 시간차는 별도 파일럿에서 확인해야 합니다.</p><div class="button-row"><button class="button primary" id="start-confirm">눌렀어요 · 블록 시작 →</button><button class="button secondary" id="cancel-start">이전으로</button></div></div>`;
+  $('#start-confirm').onclick=startBlock;$('#cancel-start').onclick=()=>{releaseLock();renderBetween();};
+}
+function startBlock(){
+  if(session.stage!=='start_sync')return;
+  const plan=session.schedule[session.next_plan_index],attempt=1+session.blocks.filter(b=>b.index===plan.index).length;
+  const planned=attempt===1?plan.trials:retryTrials(plan,session.seed,attempt);
+  session.active_block={index:plan.index,attempt,round:plan.round,condition:plan.condition,difficulty:plan.difficulty,layout:plan.layout,status:'running',flags:[],trials:[],planned_trials:planned,
+    started_at:iso(),started_epoch_ms:Date.now(),started_performance_ms:round(performance.now()),trigger_start_ack_at:iso(),rating:null};
+  session.stage='running';event('START_TRIGGER_ACK',{block_index:plan.index,attempt});event('BLOCK_START',{block_index:plan.index,attempt});persist();
+  const trialMs=session.mode==='QA'?150:TRIAL_MS;
+  session.active_block.duration_per_trial_ms=trialMs;activeTrial=null;
+  renderTrial(0);
+}
+function renderTrial(i){
+  const block=session?.active_block;if(!block||session.stage!=='running')return;
+  if(i>=block.planned_trials.length){finishRunning(false);return;}
+  const spec=block.planned_trials[i],ms=block.duration_per_trial_ms,now=performance.now(),expected=block.started_performance_ms+i*ms;
+  if(Math.abs(now-expected)>Math.max(300,ms*0.8)&&!block.flags.includes('시각 지연'))block.flags.push('시각 지연');
+  activeTrial={...spec,response:null,correct:false,rt_ms:null,onset_iso:iso(),onset_epoch_ms:Date.now(),onset_performance_ms:round(now),elapsed_start_ms:round(now-block.started_performance_ms),reveals:[]};
+  const total=Math.max(0,20*ms-(now-block.started_performance_ms)),seconds=Math.ceil(total/1000);
+  const prompt=spec.kind==='math'?`${spec.a} + ${spec.b} = ${spec.shown}`:`${spec.target}는 주의 상태인가요?`;
+  const showStates=block.layout==='detailed';
+  const statusHTML=STATUS_NAMES.map(n=>`<div class="hud-status status-${n.toLowerCase()} ${spec.states[n]==='주의'?'attention':''} ${showStates?'':'hidden-panel'}"><span>상태 ${n}</span><b>${spec.states[n]}</b></div>`).join('');
+  $('#runner-content').innerHTML=`<div class="block-screen"><div class="trial-top"><span>블록 진행 중</span><span>${i+1} / 20</span></div><div class="hud-frame"><div class="hud-common hud-timer">남은 시간<b id="remaining">${seconds}초</b></div><div class="hud-common hud-prompt">현재 과제<b>${spec.kind==='math'?'중앙 산수':'상태 확인'}</b></div><div class="hud-center"><small>${spec.kind==='math'?'CALCULATION':'STATUS CHECK'}</small><h2>${esc(prompt)}</h2><p id="answer-feedback">맞으면 O, 틀리면 X</p></div>${statusHTML}</div><div class="timer-bar"><div id="timer-fill" class="timer-fill"></div></div><div class="answer-row"><button id="answer-true" type="button"><kbd>F</kbd>맞아요 O</button><button id="answer-false" type="button"><kbd>J</kbd>틀려요 X</button></div><p class="trial-hint">${block.layout==='compact'&&spec.kind==='status'?'상태를 보려면 스페이스바를 누르세요.':'화면을 벗어나지 말고 정해진 시간 안에 응답해 주세요.'}</p>${block.layout==='compact'&&spec.kind==='status'?'<div class="button-row" style="justify-content:center"><button class="button secondary" id="reveal-status" type="button">상태 열기 · SPACE</button></div>':''}</div>`;
+  $('#answer-true').onclick=()=>answer(true,'pointer');$('#answer-false').onclick=()=>answer(false,'pointer');
+  if($('#reveal-status'))$('#reveal-status').onclick=()=>reveal('pointer');
+  event('TRIAL_ONSET',{block_index:block.index,attempt:block.attempt,details:{trial:i+1,kind:spec.kind,cycle:spec.cycle}});
+  const deadline=block.started_performance_ms+(i+1)*ms;
+  clearTimeout(activeTimer);activeTimer=setTimeout(()=>endTrial(i),Math.max(0,deadline-performance.now()));
+  const paint=()=>{if(session?.stage!=='running')return;const elapsed=performance.now()-block.started_performance_ms;
+    const remain=Math.max(0,20*ms-elapsed);const rem=$('#remaining');if(rem)rem.textContent=`${Math.ceil(remain/1000)}초`;
+    const fill=$('#timer-fill');if(fill)fill.style.transform=`scaleX(${Math.max(0,1-elapsed/(20*ms))})`;paintFrame=requestAnimationFrame(paint);};
+  cancelAnimationFrame(paintFrame);paintFrame=requestAnimationFrame(paint);
+}
+function answer(value,source){
+  const block=session?.active_block;if(session?.stage!=='running'||!activeTrial||activeTrial.response!==null)return;
+  const deadline=block.started_performance_ms+(block.trials.length+1)*block.duration_per_trial_ms;
+  const now=performance.now();if(now>=deadline)return;
+  activeTrial.response=value?'O':'X';activeTrial.correct=value===activeTrial.truth;activeTrial.rt_ms=round(now-activeTrial.onset_performance_ms);activeTrial.response_source=source;
+  $('#answer-true').disabled=true;$('#answer-false').disabled=true;$('#answer-feedback').textContent='응답을 기록했어요.';
+  event('TRIAL_RESPONSE',{block_index:block.index,attempt:block.attempt,details:{trial:block.trials.length+1,response:activeTrial.response,rt_ms:activeTrial.rt_ms}});persist();
+}
+function reveal(source){
+  const block=session?.active_block;if(session?.stage!=='running'||!activeTrial||block.layout!=='compact'||activeTrial.kind!=='status')return;
+  const now=performance.now(),deadline=block.started_performance_ms+(block.trials.length+1)*block.duration_per_trial_ms;if(now>=deadline)return;
+  activeTrial.reveals.push({at:iso(),elapsed_ms:round(now-activeTrial.onset_performance_ms),source});
+  $$('.hud-status').forEach(el=>el.classList.remove('hidden-panel'));
+  clearTimeout(revealTimer);revealTimer=setTimeout(()=>$$('.hud-status').forEach(el=>el.classList.add('hidden-panel')),session.mode==='QA'?75:REVEAL_MS);
+  event('STATUS_REVEAL',{block_index:block.index,attempt:block.attempt,details:{trial:block.trials.length+1,source}});persist();
+}
+function endTrial(i){
+  const block=session?.active_block;if(session?.stage!=='running'||!activeTrial)return;
+  activeTrial.elapsed_end_ms=round(performance.now()-block.started_performance_ms);
+  block.trials.push(activeTrial);activeTrial=null;clearTimeout(revealTimer);persist();renderTrial(i+1);
+}
+function finishRunning(interrupted,reason=''){
+  if(session?.stage!=='running')return;
+  clearTimeout(activeTimer);clearTimeout(revealTimer);cancelAnimationFrame(paintFrame);
+  const block=session.active_block;
+  if(interrupted){
+    if(reason&&!block.flags.includes(reason))block.flags.push(reason);
+    if(activeTrial){activeTrial.elapsed_end_ms=round(performance.now()-block.started_performance_ms);activeTrial.interrupted=true;block.trials.push(activeTrial);activeTrial=null;}
+    block.status='interrupted';
+  } else block.status='awaiting_rating';
+  block.finished_at=iso();block.finished_epoch_ms=Date.now();block.summary=summarizeTrials(block.trials);
+  event(interrupted?'BLOCK_INTERRUPTED':'BLOCK_END',{block_index:block.index,attempt:block.attempt,details:reason});
+  session.stage='end_sync';persist();renderEndSync();
+}
+function interrupt(reason){if(session?.stage==='running')finishRunning(true,reason);}
+function recoverInterrupted(){
+  const block=session.active_block;if(!block){session.stage='between';persist();renderBetween();return;}
+  if(!block.flags.includes('새로고침 또는 브라우저 종료'))block.flags.push('새로고침 또는 브라우저 종료');
+  block.status='interrupted';block.finished_at=iso();block.summary=summarizeTrials(block.trials||[]);session.stage='end_sync';event('BLOCK_INTERRUPTED',{block_index:block.index,attempt:block.attempt,details:'새로고침 또는 브라우저 종료'});persist();renderEndSync();
+}
+function renderEndSync(){
+  runnerShell();const block=session.active_block;
+  if(!block){session.stage='between';persist();renderBetween();return;}
+  if(!block.end_prompt_at){block.end_prompt_at=iso();event('END_TRIGGER_REQUEST',{block_index:block.index,attempt:block.attempt,details:'장비 앱에서 수동으로 종료 트리거를 누름'});persist();}
+  $('#runner-content').innerHTML=`<div class="runner-center"><div class="phase-icon">◎</div><div class="phase-label">MANUAL TRIGGER · END</div><h1>${block.status==='interrupted'?'블록이 중단됐어요.':'1분이 끝났어요.'}<br>장비 앱의 종료 트리거를 눌러 주세요.</h1><p>MeasureWiz 앱에서 <b>trigger point</b>를 누른 뒤<br>아래 버튼을 눌러 확인합니다.</p>${block.status==='interrupted'?`<p class="form-error">중단 사유: ${esc(block.flags.join(', '))}<br>이 시도는 분석용 완전 블록에 포함되지 않습니다.</p>`:''}<div class="button-row"><button class="button primary" id="end-confirm">눌렀어요 · 다음 →</button></div></div>`;
+  $('#end-confirm').onclick=()=>{
+    if(session.stage!=='end_sync')return;
+    block.trigger_end_ack_at=iso();event('END_TRIGGER_ACK',{block_index:block.index,attempt:block.attempt});
+    if(block.status==='interrupted'){
+      block.planned_trials=undefined;session.blocks.push(block);session.active_block=null;session.stage='retry';persist();releaseLock();renderRetry();
+    } else {session.stage='rating';persist();renderRating();}
+  };
+}
+function renderRetry(){
+  $('#runner-content').innerHTML=`<div class="runner-center"><div class="phase-icon">↺</div><h1>중단된 기록을 보관했어요.</h1><p>같은 조건을 새 문항으로 다시 수행할 수 있습니다.<br>이전의 부분 기록과 중단 사유도 함께 저장됩니다.</p><div class="button-row"><button id="retry-block" class="button primary">같은 조건 다시 준비 →</button><button id="skip-block" class="button secondary">이 블록 제외하고 진행</button><button id="retry-save" class="button secondary">기록 저장 ↓</button></div></div>`;
+  $('#retry-block').onclick=()=>{session.stage='between';persist();renderBetween();};
+  $('#skip-block').onclick=()=>{event('BLOCK_SKIPPED',{block_index:session.schedule[session.next_plan_index].index,details:'중단 후 연구자가 제외'});session.next_plan_index++;session.stage='between';persist();openRunner();};
+  $('#retry-save').onclick=()=>downloadJSON();
+}
+function renderRating(){
+  runnerShell();const block=session.active_block;let selected=Number.isFinite(block.rating)?block.rating:null;
+  const paint=()=>{
+    $('#runner-content').innerHTML=`<div class="runner-center"><div class="phase-icon">◡</div><div class="phase-label">HOW DID IT FEEL?</div><h1>방금 과제에<br>얼마나 정신적 노력이 들었나요?</h1><p>방금 1분을 떠올리며 0부터 10까지 선택해 주세요.</p><div class="rating-grid">${Array.from({length:11},(_,i)=>`<button type="button" class="${selected===i?'selected':''}" data-rating="${i}" aria-pressed="${selected===i}">${i}</button>`).join('')}</div><div class="rating-ends"><span>전혀 노력하지 않음</span><span>매우 많은 노력</span></div><div class="button-row"><button id="submit-rating" class="button primary" ${selected===null?'disabled':''}>기록하고 계속 →</button></div></div>`;
+    $$('[data-rating]').forEach(b=>b.onclick=()=>{selected=Number(b.dataset.rating);paint();});
+    $('#submit-rating').onclick=()=>{
+      if(selected===null||session.stage!=='rating')return;
+      block.rating=selected;block.status='complete';block.summary=summarizeTrials(block.trials);delete block.planned_trials;
+      session.blocks.push(block);event('BLOCK_RATING',{block_index:block.index,attempt:block.attempt,details:{rating:selected}});
+      session.active_block=null;session.next_plan_index++;session.stage='between';persist();releaseLock();openRunner();
+    };
+  };paint();
+}
+function renderFinish(){
+  session.stage='finished';if(!session.finished_at){session.finished_at=iso();event('SESSION_FINISHED');persist();}releaseLock();
+  const valid=session.blocks.filter(b=>b.status==='complete'&&!b.flags?.length).length,interruptions=session.blocks.filter(b=>b.status==='interrupted').length;
+  $('#runner-content').innerHTML=`<div class="runner-center"><div class="phase-icon">✓</div><div class="phase-label">SESSION COMPLETE</div><h1>세션 기록을 저장해 주세요.</h1><p>완료 블록 ${valid}개 · 중단 시도 ${interruptions}개<br>${session.mode==='QA'?'<b>QA 테스트 자료는 연구에 사용할 수 없습니다.</b><br>':''}아래 JSON과 CSV 기록을 저장하고,<br>MeasureWiz 앱의 원본 CSV도 별도로 보관해 주세요.</p><div class="button-row"><button id="finish-json" class="button primary">세션 JSON 저장 ↓</button><button id="finish-csv" class="button secondary">기록 CSV 저장 ↓</button><button id="finish-analysis" class="button secondary">분석으로 이동 →</button></div></div>`;
+  $('#finish-json').onclick=()=>downloadJSON();$('#finish-csv').onclick=()=>downloadTables();$('#finish-analysis').onclick=()=>{switchAnalysisSession(session);setView('analysis');};
+}
+$('#exit-runner').addEventListener('click',()=>{
+  if(session?.stage==='running'){
+    if(confirm('진행 중인 블록을 중단하고 부분 기록을 보관할까요?'))interrupt('연구자 중단');
+  } else if(session?.stage==='start_sync'){releaseLock();session.stage='between';persist();setView('home');}
+  else {persist();setView('home');}
+});
+document.addEventListener('keydown',e=>{
+  if(session?.stage!=='running'||e.repeat)return;
+  if(e.code==='KeyF'){e.preventDefault();answer(true,'keyboard');}
+  else if(e.code==='KeyJ'){e.preventDefault();answer(false,'keyboard');}
+  else if(e.code==='Space'){e.preventDefault();reveal('keyboard');}
+});
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&session?.stage==='running')interrupt('탭 비활성화');});
+window.addEventListener('beforeunload',e=>{if(session?.stage==='running'){persist();e.preventDefault();e.returnValue='';}releaseLock();});
+
+function renderAnalysisSession(){
+  const el=$('#session-info');
+  if(!analysisSession){el.textContent='아직 불러온 세션이 없습니다.';return;}
+  const complete=analysisSession.blocks.filter(b=>b.status==='complete').length;
+  el.textContent=`${analysisSession.participant_id} · ${analysisSession.session_id} · ${analysisSession.mode} · 완료 ${complete}블록${analysisSession.mode==='QA'?' (검사용 자료)':''}`;
+  if(analysisSession.analysis_features&&typeof analysisSession.analysis_features==='object')features=analysisSession.analysis_features;
+  updateMapping();
+}
+function clearAnalysisResults(){
+  mappingLog=[];cvResult=null;recommendation=null;
+  $('#continuity-check').checked=false;$('#timing-check').checked=false;
+  $('#eeg-analysis-message').textContent='';
+  $('#feature-results').innerHTML='';$('#model-results').innerHTML='';$('#recommend-results').innerHTML='';
+  $('#download-features').classList.add('hidden');$('#download-model').classList.add('hidden');
+  $('#recommend-section').classList.add('hidden');
+}
+function switchAnalysisSession(data){
+  clearAnalysisResults();analysisSession=data;features=data.analysis_features||{};
+  eegFiles=[];merged=null;$('#eeg-files').value='';$('#file-order').innerHTML='';
+  $('#eeg-info').textContent='아직 불러온 EEG 파일이 없습니다.';
+  renderAnalysisSession();
+}
+$('#session-file').addEventListener('change',async e=>{
+  const f=e.target.files?.[0];if(!f)return;
+  try{const data=JSON.parse(await f.text());if(!sessionValid(data))throw new Error('이 사이트의 세션 JSON이 아닙니다.');switchAnalysisSession(data);}
+  catch(error){$('#session-info').textContent=`불러오기 실패: ${error.message}`;}e.target.value='';
+});
+$('#use-current').onclick=()=>{const s=loadSaved();if(!s){toast('이 브라우저에 저장된 세션이 없습니다.');return;}switchAnalysisSession(s);};
+$('#eeg-files').addEventListener('change',async e=>{
+  const files=[...e.target.files];if(!files.length)return;
+  clearAnalysisResults();features={};$('#continuity-check').checked=false;$('#timing-check').checked=false;
+  try{eegFiles=[];for(const f of files)eegFiles.push(parseMeasureWizCSV(await f.text(),f.name));rebuildEEG();}
+  catch(error){eegFiles=[];merged=null;$('#eeg-info').textContent=`불러오기 실패: ${error.message}`;updateMapping();}e.target.value='';
+});
+function rebuildEEG(){
+  try{merged=mergeEEG(eegFiles);const duration=merged.samples.length/merged.frequency;
+    $('#eeg-info').textContent=`${merged.parts.length}개 파일 · ${merged.frequency}Hz · 표본 ${merged.samples.length.toLocaleString()}개 · 트리거 ${merged.markers.length}개 · 연속 저장 가정 ${duration.toFixed(1)}초`;
+    $('#file-order').innerHTML=merged.parts.map((p,i)=>`<div class="file-row"><span>${i+1}. ${esc(p.filename)} · ${p.count.toLocaleString()}개${p.malformed?` · 읽기 오류 ${p.malformed}`:''}</span><button class="icon-button" data-move="up" data-file="${i}" aria-label="파일 위로">↑</button><button class="icon-button" data-move="down" data-file="${i}" aria-label="파일 아래로">↓</button></div>`).join('');
+    $$('#file-order [data-move]').forEach(btn=>btn.onclick=()=>{const i=Number(btn.dataset.file),j=i+(btn.dataset.move==='up'?-1:1);if(j<0||j>=eegFiles.length)return;[eegFiles[i],eegFiles[j]]=[eegFiles[j],eegFiles[i]];clearAnalysisResults();features={};$('#continuity-check').checked=false;rebuildEEG();});
+    updateMapping();
+  }catch(error){merged=null;$('#eeg-info').textContent=error.message;updateMapping();}
+}
+function updateMapping(){
+  const show=!!(analysisSession&&merged);$('#mapping-section').classList.toggle('hidden',!show);
+  $('#model-section').classList.toggle('hidden',!analysisSession||!Object.keys(features).length);
+  $('#download-features').classList.toggle('hidden',!Object.keys(features).length);
+  if(!show)return;
+  $('#marker-list').innerHTML=merged.markers.length?merged.markers.map((m,i)=>`<span class="marker-chip">#${i+1} · ${(m.sample/merged.frequency).toFixed(2)}초 · ${esc(m.file)}</span>`).join(''):'<span class="inline-info">trigger point가 없습니다. 이 파일만으로 블록을 연결할 수 없습니다.</span>';
+  const blocks=analysisSession.blocks.filter(b=>b.status==='complete');
+  $('#mapping-body').innerHTML=blocks.map(b=>`<tr><td>${b.index}${b.flags?.length?' ⚠':''}</td><td>${esc(formatCondition(b))}</td><td><input type="number" min="1" max="${merged.markers.length}" data-start="${b.index}" aria-label="${b.index} 블록 시작 트리거"></td><td><input type="number" min="1" max="${merged.markers.length}" data-end="${b.index}" aria-label="${b.index} 블록 종료 트리거"></td></tr>`).join('')||'<tr><td colspan="4">완료된 블록이 없습니다.</td></tr>';
+  if(Object.keys(features).length){renderFeatureResults();$('#model-section').classList.remove('hidden');}
+}
+$('#run-eeg').onclick=()=>{
+  if(!analysisSession||!merged)return;
+  if(!$('#continuity-check').checked||!$('#timing-check').checked){$('#eeg-analysis-message').textContent='파일 연속성과 트리거 시간차를 확인한 뒤 체크해 주세요.';return;}
+  const threshold=Number($('#qc-threshold').value);if(!Number.isFinite(threshold)||threshold<=0){$('#eeg-analysis-message').textContent='양수의 잡음 제외 기준을 입력해 주세요.';return;}
+  const used=new Set(),next={},logs=[];let lastEnd=0;
+  for(const block of analysisSession.blocks.filter(b=>b.status==='complete')){
+    const a=$(`[data-start="${block.index}"]`)?.value,b=$(`[data-end="${block.index}"]`)?.value;
+    if(!a&&!b){logs.push({index:block.index,status:'미지정'});continue;}
+    const start=Number(a),end=Number(b);
+    if(block.flags?.length){logs.push({index:block.index,status:`제외: ${block.flags.join(', ')}`});continue;}
+    if(!a||!b||used.has(start)||used.has(end)||start<=lastEnd){logs.push({index:block.index,status:'제외: 트리거 누락·중복 또는 블록 순서 충돌'});continue;}
+    try{const f=extractBandFeature(merged,start,end,{thresholdUv:threshold});used.add(start);used.add(end);lastEnd=end;next[String(block.index)]=f;logs.push({index:block.index,status:'계산됨',feature:f});}
+    catch(error){logs.push({index:block.index,status:`제외: ${error.message}`});}
+  }
+  features=next;mappingLog=logs;cvResult=null;recommendation=null;analysisSession.analysis_features=features;
+  analysisSession.analysis_audit={created_at:iso(),file_order:merged.parts.map(p=>p.filename),threshold_uv:threshold,
+    operator_attested_continuity:true,operator_attested_trigger_timing:true,mapping:logs,warning:'기기 시간 정렬과 표본 연속성은 별도 파일럿에서 검증 필요'};
+  if(session&&session.participant_id===analysisSession.participant_id&&session.session_id===analysisSession.session_id&&session.created_at===analysisSession.created_at&&session.seed===analysisSession.seed){session.analysis_features=features;session.analysis_audit=analysisSession.analysis_audit;persist();}
+  $('#eeg-analysis-message').textContent=`유효 특징 ${Object.keys(features).length}개. 제외·미지정 항목도 아래에 남겼습니다.`;renderFeatureResults();
+  $('#download-features').classList.toggle('hidden',!Object.keys(features).length);$('#model-section').classList.toggle('hidden',!Object.keys(features).length);$('#recommend-section').classList.add('hidden');
 };
-
-function scaled(ms) {
-  return Math.max(QA_MODE ? 8 : 0, ms * TIME_SCALE);
+function renderFeatureResults(){
+  const logs=mappingLog.length?mappingLog:Object.entries(features).map(([index,feature])=>({index,status:'계산됨',feature}));
+  $('#feature-results').innerHTML=logs.length?`<div class="table-wrap"><table><thead><tr><th>블록</th><th>상태</th><th>유효 구간</th><th>log(theta / alpha)</th></tr></thead><tbody>${logs.map(row=>`<tr><td>${esc(row.index)}</td><td>${esc(row.status)}</td><td>${row.feature?`${row.feature.valid_seconds.toFixed(1)}초`: '—'}</td><td>${row.feature?row.feature.log_theta_alpha.toFixed(4):'—'}</td></tr>`).join('')}</tbody></table></div><div class="button-row"><button type="button" class="button secondary" id="backup-analysis">분석 포함 JSON 저장 ↓</button></div><p class="footnote">Quality=0과 선택한 진폭 기준 초과 구간을 제외합니다. Quality 값의 의미와 눈 움직임의 영향은 별도 확인이 필요합니다.</p>`:'';
+  if($('#backup-analysis'))$('#backup-analysis').onclick=()=>downloadJSON(analysisSession);
+}
+$('#download-features').onclick=()=>{const rows=Object.entries(features).map(([index,f])=>({participant_id:analysisSession.participant_id,session_id:analysisSession.session_id,block_index:index,...f}));const cols=['participant_id','session_id','block_index','marker_start','marker_end','marker_duration_s','core_duration_s','valid_seconds','valid_windows','rejected_windows','unknown_quality_windows','theta_power','alpha_power','log_theta_alpha','threshold_uv','trim_seconds','note'];download(`${prefix(analysisSession)}_eeg_features.csv`,toCSV(cols,rows),'text/csv;charset=utf-8');};
+$('#run-model').onclick=()=>{
+  if(!analysisSession)return;
+  cvResult=groupedCrossValidation(analysisSession.blocks,features);const el=$('#model-results');
+  if(!cvResult.mae){el.innerHTML=`<p class="result-message">분석 가능한 학습 블록이 부족합니다. 각 평가 라운드마다 나머지 유효 블록 16개 이상과 네 조건별 3개 이상이 필요해요. 현재 EEG 특징 ${cvResult.eligible_blocks}개입니다.</p>`;$('#download-model').classList.add('hidden');$('#recommend-section').classList.add('hidden');return;}
+  const m=cvResult.mae,delta=cvResult.delta_a_minus_b;
+  el.innerHTML=`<div class="result-grid"><div class="result-cell"><span>평균 점수 기준 MAE</span><b>${m.baseline.toFixed(2)}</b></div><div class="result-cell"><span>모델 A · 행동 기반</span><b>${m.model_a.toFixed(2)}</b></div><div class="result-cell"><span>모델 B · EEG 추가</span><b>${m.model_b.toFixed(2)}</b></div></div><p class="result-message">같은 평가 블록 ${cvResult.predictions.length}개 · A - B = <b>${delta.toFixed(2)}</b>점<br>양수면 해당 자료에서 EEG 추가 모델의 평균 오차가 더 작았다는 뜻이에요. 적은 블록의 결과는 불안정할 수 있습니다.</p><p class="footnote">유효 EEG 블록 ${cvResult.eligible_blocks}개 · 건너뛴 라운드 ${cvResult.skipped.length}개 · 규제 선형회귀 λ=1</p>`;
+  $('#download-model').classList.remove('hidden');$('#recommend-section').classList.remove('hidden');
+  const possible=analysisSession.blocks.filter(b=>b.status==='complete'&&features[String(b.index)]&&!b.flags?.length);
+  $('#recommend-block').innerHTML=possible.map(b=>`<option value="${b.index}">${b.index}번 · ${esc(formatCondition(b))}</option>`).join('');
+  if(possible.length)$('#recommend-block').value=String(possible.at(-1).index);
+};
+$('#download-model').onclick=()=>{if(!cvResult)return;const cols=['index','round','condition','actual','baseline','model_a','model_b'];download(`${prefix(analysisSession)}_heldout_predictions.csv`,toCSV(cols,cvResult.predictions),'text/csv;charset=utf-8');};
+$('#run-recommend').onclick=()=>{
+  try{const blockIndex=Number($('#recommend-block').value),policy=$('#recommend-policy').value,threshold=Number($('#recommend-threshold').value);
+    recommendation=recommendFromPast(analysisSession.blocks,features,blockIndex,policy,threshold);
+    const chosen=recommendation.layout==='compact'?'간결 화면':'상세 화면';
+    $('#recommend-results').innerHTML=`<div class="result-grid"><div class="result-cell"><span>직전 블록의 추정 점수</span><b>${recommendation.estimated_effort.toFixed(2)}</b></div><div class="result-cell"><span>선택된 화면</span><b>${chosen}</b></div><div class="result-cell"><span>이전 학습 블록</span><b>${recommendation.training_count}개</b></div></div><p class="result-message">이전 블록의 상태를 바탕으로 다음 화면을 고르는 시연이에요. 이전에 보지 않은 화면의 수행 결과는 계산하지 않습니다.</p><button class="button primary" id="launch-adaptive-demo" type="button">선택된 화면으로 한 블록 시연 →</button>`;
+    $('#launch-adaptive-demo').onclick=startAdaptiveDemo;
+  }catch(error){recommendation=null;$('#recommend-results').innerHTML=`<p class="form-error">${esc(error.message)}</p>`;}
+};
+function startAdaptiveDemo(){
+  if(!recommendation||!analysisSession)return;
+  const existing=loadSaved();if(existing&&existing.stage!=='finished'){toast('진행 중인 세션을 먼저 끝내거나 저장해 주세요.');return;}
+  if(existing&&!confirm('시연을 시작하면 이 브라우저의 이전 세션이 교체됩니다. 이전 세션과 분석 JSON을 저장했나요?'))return;
+  const source=analysisSession.blocks.find(b=>b.index===recommendation.source_index&&b.status==='complete');if(!source){toast('기준 블록을 찾지 못했습니다.');return;}
+  const condition=CONDITION_ORDER.find(c=>c.difficulty===source.difficulty&&c.layout===recommendation.layout);
+  const seed=seedFor(`${analysisSession.participant_id}:adaptive:${Date.now()}`);
+  const plan={index:1,round:1,condition:condition.id,difficulty:condition.difficulty,layout:condition.layout,label:condition.label,trials:createTrials(condition,seed)};
+  session={schema:SCHEMA,protocol_version:PROTOCOL_VERSION,participant_id:analysisSession.participant_id,session_id:`${analysisSession.session_id.slice(0,18)}-DEMO`,mode:'ADAPTIVE_DEMO',seed,created_at:iso(),updated_at:iso(),stage:'between',next_plan_index:0,schedule:[plan],blocks:[],events:[],active_block:null,
+    adaptive_source:{session_id:analysisSession.session_id,source_index:source.index,source_finished_at:source.finished_at,recommendation,selected_at:iso(),interpretation:'이전 블록 기반 지연 시연; 효과 검증 아님'}};
+  event('ADAPTIVE_DEMO_CREATED',{details:{source_index:source.index,policy:recommendation.policy,threshold:recommendation.threshold}});persist();openRunner();
 }
 
-function escapeHtml(text) {
-  return String(text).replace(/[&<>'"]/g, (char) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
-  })[char]);
-}
-
-function setStatus(text, kind = "idle") {
-  statusText.textContent = text;
-  statusDot.className = `status-dot ${kind}`;
-}
-
-function setProgress(label, current, total) {
-  progressWrap.hidden = false;
-  const percent = total ? Math.max(0, Math.min(100, current / total * 100)) : 0;
-  progressLabel.textContent = label;
-  progressValue.textContent = `${Math.round(percent)}%`;
-  progressBar.style.width = `${percent}%`;
-}
-
-function hideProgress() {
-  progressWrap.hidden = true;
-}
-
-let toastTimer = null;
-function showToast(message) {
-  clearTimeout(toastTimer);
-  toast.textContent = message;
-  toast.classList.add("show");
-  toastTimer = setTimeout(() => toast.classList.remove("show"), 3200);
-}
-
-function cleanScreen() {
-  if (state.cleanup) state.cleanup();
-  state.cleanup = null;
-  app.innerHTML = "";
-  window.scrollTo({ top: 0, behavior: "instant" });
-}
-
-function showExperiment(message = "", badge = "") {
-  experimentLayer.hidden = false;
-  experimentMessage.innerHTML = message;
-  experimentBadge.textContent = badge;
-}
-
-function hideExperiment() {
-  experimentLayer.hidden = true;
-  experimentMessage.replaceChildren();
-  experimentBadge.textContent = "";
-}
-
-function clearExperimentOverlay() {
-  experimentMessage.replaceChildren();
-  experimentBadge.textContent = "";
-}
-
-function acquireRunLock(label) {
-  if (state.runLock) {
-    state.store?.addEvent("DUPLICATE_RUN_BLOCKED", {
-      requested_run: label,
-      active_run: state.runLock,
-    });
-    showToast("이미 실험 단계가 진행 중입니다. 버튼을 다시 누르지 마세요.");
-    return false;
-  }
-  state.runLock = label;
-  return true;
-}
-
-function releaseRunLock(label = null) {
-  if (label && state.runLock !== label) return;
-  state.runLock = null;
-}
-
-function markButtonBusy(button, label) {
-  if (!button || button.dataset.busy === "true") return false;
-  button.dataset.busy = "true";
-  button.disabled = true;
-  button.setAttribute("aria-busy", "true");
-  if (label) button.textContent = label;
-  return true;
-}
-
-function messageHtml(title, body = "", timer = "") {
-  return `<div class="message-inner"><h2>${escapeHtml(title)}</h2>${body ? `<p>${escapeHtml(body)}</p>` : ""}${timer ? `<div class="timer">${escapeHtml(timer)}</div>` : ""}</div>`;
-}
-
-function acknowledgementHtml(title, body = "", confirmLabel = "내용을 이해했습니다 · 계속") {
-  return `<div class="message-inner acknowledgement-card"><h2>${escapeHtml(title)}</h2>${body ? `<p>${escapeHtml(body)}</p>` : ""}<button id="acknowledgeButton" class="button primary acknowledgement-button" type="button">${escapeHtml(confirmLabel)}</button><div class="acknowledgement-hint">버튼을 누르거나 SPACE 키를 누르면 다음 단계로 진행합니다.</div></div>`;
-}
-
-function sleep(ms) {
-  if (QA_MODE) return Promise.resolve();
-  return new Promise((resolve) => setTimeout(resolve, scaled(ms)));
-}
-
-function nextFrame(draw) {
-  return new Promise((resolve) => requestAnimationFrame((timestamp) => {
-    draw();
-    resolve(timestamp);
-  }));
-}
-
-function currentFlags() {
-  return [...state.integrityFlags].join(";");
-}
-
-async function requestFullscreen() {
-  if (document.fullscreenElement) return true;
-  try {
-    await document.documentElement.requestFullscreen({ navigationUI: "hide" });
-    return true;
-  } catch (error) {
-    state.integrityFlags.add("FULLSCREEN_REQUEST_FAILED");
-    state.store?.addEvent("FULLSCREEN_REQUEST_FAILED", { message: String(error) });
-    showToast("전체화면 전환에 실패했습니다. 브라우저 설정을 확인하세요.");
-    return false;
-  }
-}
-
-async function exitFullscreen() {
-  if (!document.fullscreenElement) return;
-  try { await document.exitFullscreen(); } catch { /* browser controls fullscreen */ }
-}
-
-function beep(frequency = 880, durationMs = 150) {
-  if (QA_MODE) return;
-  try {
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    const audio = new AudioContext();
-    const oscillator = audio.createOscillator();
-    const gain = audio.createGain();
-    oscillator.frequency.value = frequency;
-    gain.gain.setValueAtTime(0.04, audio.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + durationMs / 1000);
-    oscillator.connect(gain).connect(audio.destination);
-    oscillator.start();
-    oscillator.stop(audio.currentTime + durationMs / 1000);
-    oscillator.addEventListener("ended", () => audio.close());
-  } catch { /* audio is a convenience cue; marker logging remains primary */ }
-}
-
-function throwIfAborted() {
-  if (state.abortRequested) throw new Error("RUN_ABORTED_BY_OPERATOR");
-}
-
-async function waitWhilePaused() {
-  if (!state.paused) return;
-  await new Promise((resolve) => { state.resumeResolver = resolve; });
-  state.resumeResolver = null;
-  throwIfAborted();
-}
-
-function requestPause(reason) {
-  if (!state.running || state.paused) return;
-  state.paused = true;
-  state.pauseReason = reason;
-  state.integrityFlags.add(reason);
-  state.store?.emit("RUN_PAUSED", "RUN", "NONE", "operator", { reason });
-  if (state.currentKeyCancel) state.currentKeyCancel();
-  pauseLayer.hidden = false;
-  setStatus("일시정지", "error");
-}
-
-async function resumeRun() {
-  await requestFullscreen();
-  pauseLayer.hidden = true;
-  state.store?.emit("RUN_RESUMED", "RUN", "NONE", "operator", { reason: state.pauseReason });
-  state.paused = false;
-  state.pauseReason = null;
-  setStatus("실험 진행 중", "running");
-  state.resumeResolver?.();
-}
-
-document.querySelector("#resumeButton").addEventListener("click", resumeRun);
-document.querySelector("#partialButton").addEventListener("click", () => {
-  try { state.store?.download("session"); } catch (error) { showToast(error.message); }
-});
-document.querySelector("#stopButton").addEventListener("click", () => {
-  if (!confirm("실험을 중단하고 현재까지의 자료를 보존할까요?")) return;
-  state.abortRequested = true;
-  state.store?.emit("RUN_ABORT_REQUESTED", "RUN", "NONE", "operator");
-  state.paused = false;
-  pauseLayer.hidden = true;
-  state.resumeResolver?.();
-});
-
-document.addEventListener("fullscreenchange", () => {
-  if (state.running && !document.fullscreenElement) requestPause("FULLSCREEN_EXIT");
-});
-document.addEventListener("visibilitychange", () => {
-  if (state.running && document.hidden) requestPause("VISIBILITY_HIDDEN");
-});
-window.addEventListener("keydown", (event) => {
-  if (state.running && event.key.toLowerCase() === KEYS.pause && !event.repeat) {
-    event.preventDefault();
-    requestPause("OPERATOR_PAUSE_KEY");
-  }
-});
-window.addEventListener("beforeunload", (event) => {
-  if (!state.running) return;
-  state.store?.checkpoint();
-  event.preventDefault();
-  event.returnValue = "";
-});
-
-function collectKey(validKeys, durationMs, autoKey = null) {
-  const start = performance.now();
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (key, timestamp = performance.now()) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      window.removeEventListener("keydown", onKey, true);
-      state.currentKeyCancel = null;
-      resolve({ key, rtSeconds: key ? (timestamp - start) / 1000 : null });
-    };
-    const onKey = (event) => {
-      if (event.repeat || !validKeys.includes(event.key)) return;
-      event.preventDefault();
-      finish(event.key, performance.now());
-    };
-    window.addEventListener("keydown", onKey, true);
-    const timer = setTimeout(() => finish(null), scaled(durationMs));
-    state.currentKeyCancel = () => finish(null);
-    if (QA_MODE && autoKey) queueMicrotask(() => finish(autoKey));
-  });
-}
-
-async function waitForSpace(
-  title = "안내 확인",
-  body = "",
-  badge = "확인 버튼 또는 SPACE · P=일시정지",
-  confirmLabel = "내용을 이해했습니다 · 계속",
-) {
-  while (true) {
-    showExperiment(acknowledgementHtml(title, body, confirmLabel), badge);
-    const button = document.querySelector("#acknowledgeButton");
-    const started = performance.now();
-    const result = await new Promise((resolve) => {
-      let settled = false;
-      let timer = null;
-      const finish = (method) => {
-        if (settled) return;
-        settled = true;
-        if (timer) clearTimeout(timer);
-        window.removeEventListener("keydown", onKey, true);
-        button?.removeEventListener("click", onClick);
-        state.currentKeyCancel = null;
-        resolve({ method, rtSeconds: (performance.now() - started) / 1000 });
-      };
-      const onKey = (event) => {
-        if (event.repeat || event.key !== " ") return;
-        event.preventDefault();
-        finish("space");
-      };
-      const onClick = () => finish("button");
-      window.addEventListener("keydown", onKey, true);
-      button?.addEventListener("click", onClick);
-      timer = setTimeout(() => finish("timeout"), scaled(24 * 60 * 60 * 1000));
-      state.currentKeyCancel = () => finish("cancelled");
-      if (QA_MODE) queueMicrotask(() => finish("qa_auto"));
-    });
-    if (result.method === "cancelled" && state.paused) {
-      await waitWhilePaused();
-      continue;
-    }
-    if (["button", "space", "qa_auto"].includes(result.method)) {
-      state.store?.addEvent("INSTRUCTION_ACKNOWLEDGED", {
-        title,
-        method: result.method,
-        response_time_s: Number(result.rtSeconds.toFixed(6)),
-      });
-    }
-    return result;
-  }
-}
-
-async function countdownMessage(title, body, durationMs, eventPrefix = null) {
-  const started = performance.now();
-  if (eventPrefix) state.store?.emit(`${eventPrefix}_ONSET`, "RUN", "NONE", "operator");
-  if (QA_MODE) {
-    showExperiment(messageHtml(title, body, "QA"), "QA 단축 · 연구 결과 사용 금지");
-    await Promise.resolve();
-    if (eventPrefix) state.store?.emit(`${eventPrefix}_END`, "RUN", "NONE", "operator");
-    return;
-  }
-  while (performance.now() - started < scaled(durationMs)) {
-    await waitWhilePaused();
-    const elapsedReal = (performance.now() - started) / TIME_SCALE;
-    const remaining = Math.max(0, Math.ceil((durationMs - elapsedReal) / 1000));
-    showExperiment(messageHtml(title, body, `${remaining}`), "P=일시정지");
-    await sleep(Math.min(250, durationMs));
-    throwIfAborted();
-  }
-  if (eventPrefix) state.store?.emit(`${eventPrefix}_END`, "RUN", "NONE", "operator");
-}
-
-function renderHome() {
-  cleanScreen();
-  hideProgress();
-  setStatus("준비 전", "idle");
-  const incomplete = getIncompleteCheckpoint();
-  app.innerHTML = `
-    <section class="hero">
-      <div class="hero-copy">
-        <span class="eyebrow">Participant task & operator guide</span>
-        <h1>화면 안내부터<br>자료 저장까지 한 번에</h1>
-        <p class="lead">중앙 SAME/DIFF 과제와 주변 HUD 화살표 과제를 제시하고, 행동 응답과 EEG 정렬용 로컬 marker를 기록하는 모니터 기반 실험 실행기입니다.</p>
-        <div class="tag-row"><span class="tag">6 CONDITIONS</span><span class="tag">48 TRIALS</span><span class="tag">2 BLOCKS</span><span class="tag">LOCAL-ONLY DATA</span></div>
-      </div>
-      <aside class="hero-aside">
-        <div class="metric"><strong>48</strong><span>본실험 trials</span></div>
-        <div class="metric"><strong>2.39°</strong><span>주변 cue 이심도</span></div>
-        <div class="metric"><strong>0</strong><span>서버로 전송되는 참가자 자료</span></div>
-      </aside>
-    </section>
-    ${incomplete ? `<section class="panel"><div class="notice danger"><strong>미완료 세션이 브라우저에 남아 있습니다.</strong><br>새 실험을 시작하기 전에 부분 자료를 내려받고 체크포인트를 정리하세요.</div><div class="button-row"><button id="downloadPartial" class="button secondary">부분 session JSON 다운로드</button><button id="discardPartial" class="button danger">다운로드 확인 후 체크포인트 삭제</button></div></section>` : ""}
-    <section class="panel">
-      <div class="panel-heading"><div><span class="eyebrow">01 · Session setup</span><h2>실험 세션 설정</h2><p>이름 대신 익명 ID를 입력합니다. 같은 ID와 session 조합은 이 브라우저에서 다시 완료할 수 없습니다.</p></div></div>
-      ${QA_MODE ? `<div class="notice danger">QA 단축 모드입니다. 생성 자료는 <strong>DRY_RUN_QA</strong>이며 연구 결과로 사용할 수 없습니다.</div>` : ""}
-      <form id="setupForm">
-        <div class="mode-grid">
-          <div class="mode-option"><input type="radio" name="mode" id="modeGeometry" value="geometry"><label for="modeGeometry"><strong>화면 위치 검증</strong><span>2.39° 위치와 5 cm 눈금을 먼저 확인</span></label></div>
-          <div class="mode-option"><input type="radio" name="mode" id="modePilot" value="pilot" checked><label for="modePilot"><strong>6-trial 파일럿</strong><span>저장·키·위치·marker를 짧게 점검</span></label></div>
-          <div class="mode-option"><input type="radio" name="mode" id="modeMain" value="main"><label for="modeMain"><strong>48-trial 본실험</strong><span>protocol lock 이후에만 사용</span></label></div>
-        </div>
-        <div class="form-grid">
-          <div class="field"><label for="participant">익명 participant ID</label><input id="participant" name="participant" placeholder="예: P001" maxlength="40" autocomplete="off"><small>실명·학번·연락처 입력 금지 · 위치 검증만 할 때는 비워도 됨</small></div>
-          <div class="field"><label for="session">Session ID</label><input id="session" name="session" value="S01" maxlength="40" required autocomplete="off"><small>재실행할 때는 새 ID 사용</small></div>
-          <div class="field"><label for="monitorWidth">모니터 표시 영역 가로폭 (cm)</label><input id="monitorWidth" name="monitorWidth" type="number" value="53" min="20" max="100" step="0.1" required><small>베젤 제외, 자로 실측</small></div>
-          <div class="field"><label for="distance">눈–모니터 거리 (cm)</label><input id="distance" name="distance" type="number" value="60" min="35" max="120" step="0.5" required><small>기본 계획값 60 cm</small></div>
-          <div class="field"><label for="resolutionX">모니터 가로 해상도</label><input id="resolutionX" name="resolutionX" type="number" min="800" max="10000" value="${Math.round(screen.width * (window.devicePixelRatio || 1))}" required></div>
-          <div class="field"><label for="resolutionY">모니터 세로 해상도</label><input id="resolutionY" name="resolutionY" type="number" min="600" max="10000" value="${Math.round(screen.height * (window.devicePixelRatio || 1))}" required></div>
-        </div>
-        <div class="notice" style="margin-top:20px">MeasureWiz와 직접 통신하지 않습니다. EEG 앱의 native TRIGGER와 이 사이트의 로컬 marker 정렬은 실제 파일럿에서 검증해야 합니다.</div>
-        <div class="button-row"><button class="button primary" type="submit">환경 점검으로 이동</button><button id="selfTest" class="button secondary" type="button">48-trial 자동검사</button></div>
-      </form>
-    </section>`;
-
-  if (incomplete) {
-    document.querySelector("#downloadPartial").addEventListener("click", () => {
-      try { downloadIncompleteCheckpoint(); showToast("부분 session JSON을 내려받았습니다."); } catch (error) { showToast(error.message); }
-    });
-    document.querySelector("#discardPartial").addEventListener("click", () => {
-      if (!confirm("부분 자료를 내려받았는지 확인했나요? 삭제 후에는 브라우저에서 복구할 수 없습니다.")) return;
-      discardIncompleteCheckpoint();
-      renderHome();
-    });
-  }
-
-  document.querySelector("#selfTest").addEventListener("click", async (event) => {
-    const button = event.currentTarget;
-    button.disabled = true;
-    button.textContent = "검사 중…";
-    try {
-      for (let index = 0; index < 100; index += 1) {
-        validateMainSchedule(await generateMainTrials(`QA${String(index).padStart(3, "0")}`, "SELFTEST"));
-      }
-      showToast("PASS · 100개 seed에서 48-trial 균형과 좌표를 확인했습니다.");
-      button.textContent = "자동검사 PASS";
-    } catch (error) {
-      button.textContent = "자동검사 FAIL";
-      showToast(error.message);
-    } finally {
-      button.disabled = false;
-    }
-  });
-
-  document.querySelector("#setupForm").addEventListener("submit", (event) => {
-    event.preventDefault();
-    try {
-      const form = new FormData(event.currentTarget);
-      const mode = form.get("mode");
-      const participant = mode === "geometry" && !String(form.get("participant")).trim()
-        ? "GEOMETRY" : validateIdentifier(form.get("participant"), "participant ID");
-      const session = mode === "geometry" && !String(form.get("session")).trim()
-        ? "CHECK" : validateIdentifier(form.get("session"), "session ID");
-      const widthCm = Number(form.get("monitorWidth"));
-      const distanceCm = Number(form.get("distance"));
-      const resolution = [Number(form.get("resolutionX")), Number(form.get("resolutionY"))];
-      if (![widthCm, distanceCm, ...resolution].every(Number.isFinite)) throw new Error("모니터 설정값을 확인하세요.");
-      state.setup = { participant, session, mode, widthCm, distanceCm, resolution };
-      renderPreparation();
-    } catch (error) { showToast(error.message); }
-  });
-}
-
-function renderPreparation() {
-  cleanScreen();
-  const { mode, participant, session, widthCm, distanceCm, resolution } = state.setup;
-  setStatus("환경 점검", "ready");
-  setProgress("환경 점검", 1, 7);
-  const geometryOnly = mode === "geometry";
-  const items = geometryOnly ? [
-    ["monitor", `모니터 표시 영역 가로폭 ${widthCm} cm를 실측함`],
-    ["zoom", "브라우저 확대/축소를 100%로 설정함"],
-    ["distance", `눈–화면 거리 ${distanceCm} cm를 유지할 수 있음`],
-  ] : [
-    ["anonymous", `익명 ID ${participant} / ${session}을 EEG 파일명에도 사용함`],
-    ["consent", "[학교 연구 지침 및 동의 절차 확인]을 완료함"],
-    ["hardware", "MeasureWiz 전극·배터리·Bluetooth 연결을 확인함"],
-    ["signal", "EEG raw 파형과 앱의 연결 상태를 확인함"],
-    ["display", `모니터 ${widthCm} cm · 거리 ${distanceCm} cm · ${resolution.join("×")}를 확인함`],
-    ["privacy", "공개 GitHub 저장소에 참가자 CSV·EEG 원자료를 올리지 않기로 확인함"],
-  ];
-  app.innerHTML = `
-    <section class="panel">
-      <span class="eyebrow">02 · Preflight</span><h2>${geometryOnly ? "화면 geometry 점검" : "실험 시작 전 확인"}</h2>
-      <p>모든 항목을 실제로 확인해야 다음 단계로 이동할 수 있습니다.</p>
-      <div class="summary-grid"><div class="summary-item"><strong>${escapeHtml(participant)}</strong><span>participant</span></div><div class="summary-item"><strong>${escapeHtml(session)}</strong><span>session</span></div><div class="summary-item"><strong>${widthCm} cm</strong><span>monitor width</span></div><div class="summary-item"><strong>${distanceCm} cm</strong><span>viewing distance</span></div></div>
-      <div class="checklist">${items.map(([id, label]) => `<label class="check-item"><input type="checkbox" data-required id="check-${id}"><span>${escapeHtml(label)}</span></label>`).join("")}</div>
-      ${mode === "main" && !QA_MODE ? `<div class="field"><label for="protocolLock">본실험 protocol lock 확인</label><input id="protocolLock" placeholder="LOCKED를 정확히 입력"><small>pilot·동기화 검증·담당 교사 확인 전에는 본실험을 시작하지 않습니다.</small></div>` : ""}
-      <div class="button-row"><button id="preflightNext" class="button primary" disabled>${geometryOnly ? "전체화면 위치 검증" : "응답키 점검"}</button><button id="backHome" class="button ghost">설정으로 돌아가기</button></div>
-    </section>`;
-  const update = () => {
-    const checked = [...document.querySelectorAll("[data-required]")].every((box) => box.checked);
-    const locked = mode !== "main" || QA_MODE || document.querySelector("#protocolLock")?.value === "LOCKED";
-    document.querySelector("#preflightNext").disabled = !(checked && locked);
-  };
-  app.querySelectorAll("input").forEach((input) => input.addEventListener("input", update));
-  document.querySelector("#backHome").addEventListener("click", renderHome);
-  document.querySelector("#preflightNext").addEventListener("click", async (event) => {
-    if (!markButtonBusy(event.currentTarget, geometryOnly ? "위치 검증 여는 중…" : "응답키 점검 여는 중…")) return;
-    state.monitor = { widthCm, distanceCm, resolution, viewportWidthPx: window.innerWidth };
-    if (geometryOnly) return runGeometryCheck();
-    try {
-      const dataOrigin = QA_MODE ? "DRY_RUN_QA" : mode === "main" ? "EMPIRICAL" : "PILOT";
-      const meta = { participant, session, mode, dataOrigin, monitor: state.monitor, qaMode: QA_MODE, studyTitle: STUDY_TITLE };
-      state.store = new SessionStore(meta);
-      state.seed = await deriveParticipantSeed(participant, session);
-      state.schedule = mode === "main"
-        ? await generateMainTrials(participant, session, state.seed)
-        : await generatePilotTrials(participant, session, state.seed);
-      state.store.setSchedule(state.schedule);
-      state.store.emit("RUN_START", `${participant}_${session}_RUN`, "NONE", "setup", { mode, dataOrigin });
-      renderKeyCheck();
-    } catch (error) { showToast(error.message); }
-  });
-}
-
-async function runGeometryCheck() {
-  await requestFullscreen();
-  state.monitor.viewportWidthPx = window.innerWidth;
-  drawGeometry(canvas, state.monitor);
-  await waitForSpace(
-    "위치·길이 검증",
-    "점 여섯 개의 위치와 왼쪽 아래 5 cm 눈금을 실제로 확인하세요.",
-    "CENTER 0° · N 2.39°",
-    "위치와 5 cm 눈금을 확인했습니다",
-  );
-  hideExperiment();
-  await exitFullscreen();
-  cleanScreen();
-  app.innerHTML = `<section class="panel"><span class="eyebrow">Geometry validation</span><h2>화면 위치 확인 완료</h2><div class="notice">이 확인은 자동 측정이 아닙니다. 실제 모니터에서 5 cm 눈금과 위치가 맞는지 실험자가 확인한 기록을 decision log에 남기세요.</div><div class="button-row"><button id="geometryHome" class="button primary">처음 화면으로</button></div></section>`;
-  document.querySelector("#geometryHome").addEventListener("click", renderHome);
-}
-
-function renderKeyCheck() {
-  cleanScreen();
-  setProgress("응답키 점검", 2, 7);
-  setStatus("응답키 확인", "ready");
-  const needed = new Set(["f", "j", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
-  const labels = [
-    ["f", "F", "SAME"], ["j", "J", "DIFFERENT"], ["ArrowUp", "↑", "위"],
-    ["ArrowDown", "↓", "아래"], ["ArrowLeft", "←", "왼쪽"], ["ArrowRight", "→", "오른쪽"],
-  ];
-  app.innerHTML = `<section class="panel"><span class="eyebrow">03 · Response check</span><h2>참가자가 응답키를 직접 눌러 확인</h2><p>아래 여섯 키를 모두 한 번씩 누르세요. 본실험 중에는 마우스를 사용하지 않습니다.</p><div class="key-grid">${labels.map(([key, face, text]) => `<div class="key-card" data-key="${key}"><kbd>${face}</kbd><span>${text}</span></div>`).join("")}</div><div id="keyNotice" class="notice">남은 키: 6개</div><div class="button-row"><button id="keyNext" class="button primary" disabled>연습 과제 시작</button><button id="keyBack" class="button ghost">환경 점검으로</button></div></section>`;
-  const handler = (event) => {
-    if (!needed.has(event.key)) return;
-    event.preventDefault();
-    needed.delete(event.key);
-    document.querySelector(`[data-key="${event.key}"]`)?.classList.add("checked");
-    document.querySelector("#keyNotice").textContent = needed.size ? `남은 키: ${needed.size}개` : "PASS · 모든 응답키가 작동합니다.";
-    document.querySelector("#keyNotice").className = needed.size ? "notice" : "notice success";
-    document.querySelector("#keyNext").disabled = needed.size > 0;
-  };
-  window.addEventListener("keydown", handler);
-  state.cleanup = () => window.removeEventListener("keydown", handler);
-  document.querySelector("#keyBack").addEventListener("click", () => {
-    state.store?.complete("CANCELLED_BEFORE_RUN");
-    renderCompletion("시작 전 취소됨");
-  });
-  document.querySelector("#keyNext").addEventListener("click", runPracticeIntro);
-  if (QA_MODE) {
-    for (const key of labels.map((item) => item[0])) window.dispatchEvent(new KeyboardEvent("keydown", { key }));
-  }
-}
-
-function runPracticeIntro() {
-  cleanScreen();
-  setProgress("연습", 3, 7);
-  app.innerHTML = `<section class="panel"><span class="eyebrow">04 · Practice</span><h2>6회 연습 후 EEG 준비로 이동</h2><p>중앙의 두 연결 패턴이 같으면 F, 다르면 J를 누릅니다. 다음 화면에서는 방금 본 화살표 방향을 방향키로 응답합니다.</p><div class="notice">연습 자료는 <strong>PRACTICE</strong>로 분리되며 본실험·통계 자료에 포함되지 않습니다.</div><div class="button-row"><button id="practiceStart" class="button primary">설명을 이해했습니다 · 전체화면 연습 시작</button></div></section>`;
-  document.querySelector("#practiceStart").addEventListener("click", (event) => {
-    if (!markButtonBusy(event.currentTarget, "연습 화면 여는 중…")) return;
-    runPractice();
-  });
-}
-
-async function runPractice() {
-  if (!acquireRunLock("practice")) return;
-  state.running = true;
-  state.abortRequested = false;
-  await requestFullscreen();
-  state.monitor.viewportWidthPx = window.innerWidth;
-  try {
-    const trials = await generatePilotTrials(state.setup.participant, state.setup.session, (state.seed ^ 0x50524143) >>> 0);
-    for (const [index, trial] of trials.entries()) {
-      setProgress(`연습 ${index + 1}/6`, index, 6);
-      const row = await runTaskTrial({ ...trial, trialId: `${state.setup.participant}_${state.setup.session}_PRACTICE_T${String(index + 1).padStart(3, "0")}` }, { kind: "practice", feedback: true });
-      state.store.addBehavior(row, "practice");
-      throwIfAborted();
-    }
-    state.running = false;
-    releaseRunLock("practice");
-    hideExperiment();
-    await exitFullscreen();
-    renderEegPreparation();
-  } catch (error) { await handleRunError(error); }
-}
-
-function renderEegPreparation() {
-  cleanScreen();
-  setProgress("EEG 준비", 4, 7);
-  setStatus("EEG 준비", "ready");
-  const name = `${state.setup.participant}_${state.setup.session}`;
-  app.innerHTML = `<section class="panel"><span class="eyebrow">05 · EEG recording</span><h2>MeasureWiz 녹화 준비</h2><div class="notice danger">앱의 ‘스트레스 측정 패러다임’이 아니라 <strong>생체신호 측정 → EEG → 녹화 시작</strong>을 사용합니다. 장비별 조작은 공식 매뉴얼을 따르세요.</div><div class="checklist"><label class="check-item"><input type="checkbox" data-eeg><span>전극과 연결 상태를 확인함<small>확정 부착안: SIG 이마 왼편 / REF 귀 뒤 뼈 / GND 이마 중앙</small></span></label><label class="check-item"><input type="checkbox" data-eeg><span>Raw EEG 파형과 신호 상태를 확인함</span></label><label class="check-item"><input type="checkbox" data-eeg><span>EEG 녹화를 시작함</span></label><label class="check-item"><input type="checkbox" data-eeg><span>EEG 파일 식별자를 <strong>${escapeHtml(name)}</strong>와 맞춤</span></label></div><div class="notice">버튼을 누르면 10초 안정화 후 동기화 화면이 나타납니다. <strong>MeasureWiz의 TRIGGER는 매 문제마다 누르지 않습니다.</strong> 사이트에 “지금 TRIGGER”가 표시될 때만 앱의 TRIGGER를 한 번 누르세요.</div><div class="notice success">각 문제의 시작·중앙 응답·화살표 응답·종료 시점은 사이트가 marker CSV에 자동으로 기록합니다. 수동 TRIGGER는 세션 시작·본실험 시작·2블록 시작·세션 종료의 시간축 정렬 지점으로 사용합니다.</div><div class="button-row"><button id="syncStart" class="button primary" disabled>10초 안정화·동기화 시작</button><button id="eegCancel" class="button danger">세션 중단</button></div></section>`;
-  const boxes = [...document.querySelectorAll("[data-eeg]")];
-  const update = () => { document.querySelector("#syncStart").disabled = !boxes.every((box) => box.checked); };
-  boxes.forEach((box) => box.addEventListener("change", update));
-  document.querySelector("#syncStart").addEventListener("click", (event) => {
-    if (!markButtonBusy(event.currentTarget, "실험 화면 여는 중…")) return;
-    beginRecordedSession();
-  });
-  document.querySelector("#eegCancel").addEventListener("click", async () => {
-    state.store.complete("ABORTED_BEFORE_EEG_TASK");
-    renderCompletion("실험 시작 전 중단됨");
-  });
-}
-
-async function runSyncPrompt(label, stabilizeMs = 10_000) {
-  await requestFullscreen();
-  state.monitor.viewportWidthPx = window.innerWidth;
-  await countdownMessage("움직이지 말고 화면을 편하게 보세요", `${label} 동기화 전 안정화`, stabilizeMs, `SYNC_${label}_STABILIZE`);
-  await nextFrame(() => drawSyncFlash(canvas));
-  const onset = state.store.emit("SYNC_TRIGGER_REQUEST", `SYNC_${label}`, "NONE", "synchronization", { label });
-  beep(1100, 180);
-  await sleep(180);
-  drawBlank(canvas);
-  await waitForSpace(
-    "지금 TRIGGER",
-    "MeasureWiz 앱에서 TRIGGER를 한 번 누르세요. 매 trial마다 누르는 것이 아니라, 이 안내 화면이 나타날 때만 누릅니다.",
-    `${label} · web onset ${onset.toFixed(3)} s`,
-    "TRIGGER를 눌렀습니다",
-  );
-  state.store.emit("SYNC_TRIGGER_CONFIRMED", `SYNC_${label}`, "NONE", "synchronization", { label, requestOnset: onset });
-  await sleep(250);
-}
-
-async function beginRecordedSession() {
-  if (!acquireRunLock("recorded_session")) return;
-  state.running = true;
-  state.abortRequested = false;
-  setStatus("EEG recording 진행", "running");
-  try {
-    await runSyncPrompt("SESSION_START");
-    await runCalibration();
-    await runSyncPrompt("MAIN_START", 3000);
-    await waitForSpace(
-      state.setup.mode === "main" ? "본실험 1블록 시작 전 확인" : "6-trial 파일럿 시작 전 확인",
-      "중앙 과제는 F/J, 화살표 과제는 방향키로 응답합니다. trial 시작·응답·끝 marker는 사이트가 자동 저장하므로 MeasureWiz TRIGGER를 매 문제마다 누르지 마세요.",
-      "과제 규칙 확인",
-      state.setup.mode === "main" ? "이해했습니다 · 1블록 시작" : "이해했습니다 · 파일럿 시작",
-    );
-    await runScheduledTrials();
-    await runSyncPrompt("SESSION_END", 1000);
-    state.store.emit("RUN_END", `${state.setup.participant}_${state.setup.session}_RUN`, "NONE", "operator", { status: "COMPLETE" });
-    state.store.complete("COMPLETE");
-    state.running = false;
-    releaseRunLock("recorded_session");
-    hideExperiment();
-    await exitFullscreen();
-    renderCompletion("실험 완료");
-  } catch (error) { await handleRunError(error); }
-}
-
-async function timedCalibrationPhase(title, body, durationMs, startEvent, endEvent) {
-  await waitForSpace(
-    title,
-    `${body} 설명을 이해하고 준비가 되면 아래 버튼을 누르세요.`,
-    "EEG calibration · 확인 버튼 또는 SPACE · P=일시정지",
-    "설명을 이해했습니다 · 시작",
-  );
-  await countdownMessage("3초 뒤 시작", title, 3000);
-  drawFixation(canvas);
-  clearExperimentOverlay();
-  state.store.emit(startEvent, `CAL_${startEvent}`, "NONE", "calibration_qc");
-  await sleep(durationMs);
-  await waitWhilePaused();
-  state.store.emit(endEvent, `CAL_${startEvent}`, "NONE", "calibration_qc");
-  beep();
-}
-
-async function runCalibration() {
-  setProgress("Calibration", 5, 7);
-  await timedCalibrationPhase("눈 뜸 30초", "중앙 +를 보고 움직임과 눈 깜빡임을 줄이세요.", CALIBRATION.eyesOpenMs, "QC_EYES_OPEN_ONSET", "QC_EYES_OPEN_END");
-
-  await waitForSpace(
-    "눈 감음 30초",
-    "시작 신호 뒤 눈을 감고, 종료음이 들리면 다시 뜨세요. 설명을 이해하고 준비가 되면 아래 버튼을 누르세요.",
-    "EEG calibration · 확인 버튼 또는 SPACE · P=일시정지",
-    "설명을 이해했습니다 · 시작",
-  );
-  await countdownMessage("3초 뒤 눈을 감으세요", "종료음이 들릴 때까지 유지", 3000);
-  drawBlank(canvas);
-  clearExperimentOverlay();
-  beep(660, 120);
-  state.store.emit("QC_EYES_CLOSED_ONSET", "CAL_EYES_CLOSED", "NONE", "calibration_qc");
-  await sleep(CALIBRATION.eyesClosedMs);
-  await waitWhilePaused();
-  state.store.emit("QC_EYES_CLOSED_END", "CAL_EYES_CLOSED", "NONE", "calibration_qc");
-  beep(990, 220);
-
-  await runNBack(0);
-  showExperiment(messageHtml("휴식 30초", "편안히 쉬되 전극은 건드리지 마세요."), "Calibration rest");
-  state.store.emit("CALIBRATION_REST_ONSET", "CAL_REST", "NONE", "calibration_rest");
-  await sleep(CALIBRATION.restMs);
-  state.store.emit("CALIBRATION_REST_END", "CAL_REST", "NONE", "calibration_rest");
-  await runNBack(2);
-}
-
-async function runNBack(level) {
-  const phase = level === 0 ? "calibration_low" : "calibration_high";
-  const title = level === 0 ? "0-back · 숫자가 0이면 F" : "2-back · 두 칸 전 숫자와 같으면 F";
-  const body = level === 0
-    ? "숫자가 0이면 F(SAME), 아니면 J(DIFFERENT)를 누르세요."
-    : "현재 숫자가 두 칸 전 숫자와 같으면 F(SAME), 다르면 J(DIFFERENT)를 누르세요.";
-  await waitForSpace(
-    title,
-    `${body} 규칙을 이해했으면 아래 버튼을 누르세요.`,
-    "15 trials · 60초 · P=일시정지",
-    "규칙을 이해했습니다 · 시작",
-  );
-  clearExperimentOverlay();
-  const trials = generateNBackTrials(level, state.seed);
-  for (const trial of trials) {
-    throwIfAborted();
-    await waitWhilePaused();
-    const trialId = `${state.setup.participant}_${state.setup.session}_${level}BACK_T${String(trial.index).padStart(3, "0")}`;
-    const start = await nextFrame(() => drawDigit(canvas, trial.digit));
-    const onset = state.store.emit("TASK_ONSET", trialId, "NONE", phase, { digit: trial.digit, level });
-    const valid = ["f", "j"];
-    const expectedKey = trial.isTarget ? "f" : "j";
-    const responsePromise = collectKey(valid, CALIBRATION.nbackTrialMs, expectedKey);
-    await sleep(CALIBRATION.nbackStimulusMs);
-    drawBlank(canvas);
-    const response = await responsePromise;
-    state.store.emit("NBACK_RESPONSE", trialId, "NONE", phase, { response: response.key, rt_s: response.rtSeconds });
-    const elapsed = (performance.now() - start) / TIME_SCALE;
-    if (elapsed < CALIBRATION.nbackTrialMs) await sleep(CALIBRATION.nbackTrialMs - elapsed);
-    state.store.emit("TRIAL_END", trialId, "NONE", phase);
-    state.store.addBehavior({
-      participant: state.setup.participant,
-      session: state.setup.session,
-      trial: trial.index,
-      trial_id: trialId,
-      phase,
-      nback_level: level,
-      digit: trial.digit,
-      is_target: Number(trial.isTarget),
-      response: response.key === "f" ? "SAME" : response.key === "j" ? "DIFFERENT" : "",
-      correct: response.key ? Number(response.key === expectedKey) : 0,
-      rt_s: response.rtSeconds?.toFixed(6) ?? "",
-      stimulus_onset: onset.toFixed(6),
-      seed: state.seed,
-      data_origin: state.store.meta.dataOrigin,
-      integrity_flags: currentFlags(),
-    }, "calibration");
-  }
-}
-
-async function runScheduledTrials() {
-  const total = state.schedule.length;
-  for (const [index, trial] of state.schedule.entries()) {
-    throwIfAborted();
-    await waitWhilePaused();
-    setProgress(`${state.setup.mode === "main" ? "본실험" : "파일럿"} ${index + 1}/${total}`, index, total);
-    const row = await runTaskTrial(trial, { kind: "main", feedback: false });
-    state.store.addBehavior(row, "main");
-
-    if (state.setup.mode === "main" && trial.block === 1 && trial.blockTrial === 24) {
-      state.store.emit("BLOCK_BREAK_ONSET", "BLOCK_01_BREAK", "NONE", "main", { block: 1 });
-      await countdownMessage("블록 휴식", "움직임을 줄이고 전극·EEG recording 상태를 확인하세요.", TIMING_MS.blockBreak);
-      state.store.emit("BLOCK_BREAK_END", "BLOCK_01_BREAK", "NONE", "main", { block: 1 });
-      await runSyncPrompt("BLOCK2_START", 3000);
-      await waitForSpace(
-        "2블록 시작 전 확인",
-        "참가자 상태와 EEG recording을 확인하세요. 다음 trial들의 시작·끝 marker는 사이트가 자동으로 저장합니다.",
-        "Block 2 · 확인 버튼 또는 SPACE",
-        "확인했습니다 · 2블록 시작",
-      );
-    }
-  }
-  setProgress("자료 마무리", total, total);
-}
-
-async function runTaskTrial(trial, { kind, feedback }) {
-  const practice = kind === "practice";
-  const prefix = practice ? "PRACTICE_" : "";
-  const dataOrigin = practice ? "PRACTICE" : state.store.meta.dataOrigin;
-  const flagsBefore = currentFlags();
-  state.store.emit(`${prefix}FIXATION_ONSET`, trial.trialId, trial.condition, practice ? "practice" : "main");
-  clearExperimentOverlay();
-  drawFixation(canvas);
-  await sleep(TIMING_MS.fixation);
-  await waitWhilePaused();
-
-  await nextFrame(() => drawTrial(canvas, trial, state.monitor));
-  const onset = state.store.emit(`${prefix}TASK_ONSET`, trial.trialId, trial.condition, practice ? "practice" : "main", {
-    cue_direction: trial.cueDirection,
-    stimulus_seed: trial.stimulusSeed,
-  });
-  await sleep(TIMING_MS.taskAndCue);
-  await waitWhilePaused();
-
-  drawResponsePrompt(canvas, "중앙 패턴 판단", "F = SAME · J = DIFFERENT");
-  const expectedPrimaryKey = trial.primarySame ? "f" : "j";
-  const primary = await collectKey(["f", "j"], TIMING_MS.primaryResponse, expectedPrimaryKey);
-  await waitWhilePaused();
-  const primaryResponse = primary.key === "f" ? "SAME" : primary.key === "j" ? "DIFFERENT" : "";
-  state.store.emit(`${prefix}PRIMARY_RESPONSE`, trial.trialId, trial.condition, practice ? "practice" : "main", {
-    response: primaryResponse,
-    rt_s: primary.rtSeconds,
-    timed_out: !primary.key,
-  });
-
-  drawResponsePrompt(canvas, "화살표 방향 판단", "↑ · ↓ · ← · → 방향키");
-  const expectedCueKey = Object.entries(KEYS.cue).find(([, direction]) => direction === trial.cueDirection)[0];
-  const cue = await collectKey(Object.keys(KEYS.cue), TIMING_MS.cueResponse, expectedCueKey);
-  await waitWhilePaused();
-  const cueResponse = cue.key ? KEYS.cue[cue.key] : "";
-  state.store.emit(`${prefix}CUE_RESPONSE`, trial.trialId, trial.condition, practice ? "practice" : "main", {
-    response: cueResponse,
-    rt_s: cue.rtSeconds,
-    timed_out: !cue.key,
-  });
-
-  drawBlank(canvas);
-  await sleep(trial.itiMs);
-  state.store.emit(`${prefix}TRIAL_END`, trial.trialId, trial.condition, practice ? "practice" : "main");
-  const row = {
-    participant: state.setup.participant,
-    session: state.setup.session,
-    block: trial.block,
-    block_trial: trial.blockTrial,
-    trial: trial.trial,
-    trial_id: trial.trialId,
-    condition: trial.condition,
-    eccentricity: trial.eccentricity,
-    direction: trial.direction,
-    cue_direction: trial.cueDirection,
-    primary_same: Number(trial.primarySame),
-    primary_response: primaryResponse,
-    primary_correct: Number(primaryResponse === (trial.primarySame ? "SAME" : "DIFFERENT")),
-    primary_rt_s: primary.rtSeconds?.toFixed(6) ?? "",
-    cue_response: cueResponse,
-    cue_correct: Number(cueResponse === trial.cueDirection),
-    cue_rt_s: cue.rtSeconds?.toFixed(6) ?? "",
-    stimulus_onset: onset.toFixed(6),
-    phase: practice ? "practice" : "main",
-    seed: trial.seed,
-    stimulus_seed: trial.stimulusSeed,
-    data_origin: dataOrigin,
-    integrity_flags: [flagsBefore, currentFlags()].filter(Boolean).join(";") || "",
-  };
-  if (feedback) {
-    const ok = row.primary_correct && row.cue_correct;
-    drawBlank(canvas);
-    clearExperimentOverlay();
-    showExperiment(messageHtml(ok ? "정답" : "응답 확인", `중앙: ${trial.primarySame ? "SAME" : "DIFFERENT"} · 화살표: ${trial.cueDirection}`), "연습 자료 · 본실험 제외");
-    await sleep(700);
-    clearExperimentOverlay();
-    drawBlank(canvas);
-  }
-  return row;
-}
-
-async function handleRunError(error) {
-  state.running = false;
-  releaseRunLock();
-  state.store?.emit("RUN_ERROR", "RUN", "NONE", "operator", { message: String(error?.message || error) });
-  state.store?.complete(error?.message === "RUN_ABORTED_BY_OPERATOR" ? "ABORTED" : "ERROR");
-  hideExperiment();
-  pauseLayer.hidden = true;
-  await exitFullscreen();
-  renderCompletion(error?.message === "RUN_ABORTED_BY_OPERATOR" ? "실험 중단됨" : "오류로 종료됨", error);
-}
-
-function renderCompletion(title, error = null) {
-  cleanScreen();
-  hideProgress();
-  setStatus(title, error ? "error" : "ready");
-  const store = state.store;
-  if (!store) return renderHome();
-  const files = store.fileDefinitions();
-  app.innerHTML = `<section class="panel"><span class="eyebrow">Final · Local export</span><h2>${escapeHtml(title)}</h2>${error ? `<div class="notice danger">${escapeHtml(error.message || String(error))}</div>` : `<div class="notice success">수집된 자료는 아직 이 브라우저 안에만 있습니다. 아래 파일을 모두 내려받은 뒤 EEG CSV와 함께 백업하세요.</div>`}<div class="summary-grid"><div class="summary-item"><strong>${store.behavior.length}</strong><span>main/pilot rows</span></div><div class="summary-item"><strong>${store.calibrationBehavior.length}</strong><span>calibration rows</span></div><div class="summary-item"><strong>${store.markers.length}</strong><span>markers</span></div><div class="summary-item"><strong>${store.status}</strong><span>run status</span></div></div><div class="download-grid">${files.map((file) => `<div class="download-card"><h3>${escapeHtml(file.name)}</h3><p>${escapeHtml(file.description)}</p><button class="button secondary" data-download="${file.id}">다운로드</button></div>`).join("")}</div><div class="notice">필수 확인: main/pilot 행동 CSV, marker CSV, session JSON, calibration CSV, schedule CSV와 MeasureWiz 원본 CSV의 participant/session이 일치해야 합니다.</div><div class="button-row"><button id="downloadAll" class="button primary">6개 파일 모두 다운로드</button><button id="finishSession" class="button success">다운로드 확인·체크포인트 정리</button></div></section>`;
-  document.querySelectorAll("[data-download]").forEach((button) => button.addEventListener("click", () => store.download(button.dataset.download)));
-  document.querySelector("#downloadAll").addEventListener("click", () => { store.downloadAll(); showToast("브라우저가 여러 다운로드를 차단하면 각 파일 버튼을 눌러주세요."); });
-  document.querySelector("#finishSession").addEventListener("click", () => {
-    if (!confirm("필수 파일과 MeasureWiz 원본 CSV를 모두 확인했나요? 브라우저 체크포인트를 정리합니다.")) return;
-    store.clearCheckpoint();
-    state.store = null;
-    renderHome();
-  });
-}
-
-renderHome();
+session=loadSaved();renderSaved();
+if(qaRequested){const p=document.createElement('div');p.className='notice-card';p.style.marginTop='14px';p.innerHTML='<span>!</span><p><b>QA 테스트 모드</b><br>과제 시간이 단축되며 생성된 자료는 연구에 사용할 수 없습니다.</p>';$('.content-grid').before(p);}
