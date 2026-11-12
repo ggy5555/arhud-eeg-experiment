@@ -6,19 +6,20 @@
   <meta name="theme-color" content="#f6f7f4">
   <title>유리프 실험실 · 작업 부담과 정보 화면</title>
   <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./app-ui.css">
 </head>
 <body>
 <div id="app" class="app-shell">
   <aside class="sidebar">
-    <a class="brand" href="#home" aria-label="유리프 실험실 홈"><span class="brand-mark">✳</span><span>YURIP <small>RESEARCH STUDIO</small></span></a>
-    <div class="sidebar-label">WORKSPACE</div>
+    <a class="brand" href="#home" aria-label="유리프 실험실 홈"><span class="brand-mark">Y</span><span>YURIP <small>RESEARCH WORKSPACE</small></span></a>
+    <div class="sidebar-label">연구 메뉴</div>
     <nav class="nav" aria-label="메인 메뉴">
-      <button type="button" data-view="home" class="nav-item active"><span class="nav-icon">◫</span> 실험 준비</button>
-      <button type="button" data-view="analysis" class="nav-item"><span class="nav-icon">▥</span> 데이터 분석</button>
-      <button type="button" data-view="guide" class="nav-item"><span class="nav-icon">▤</span> 진행 안내</button>
+      <button type="button" data-view="home" class="nav-item active">실험 준비</button>
+      <button type="button" data-view="analysis" class="nav-item">데이터 분석</button>
+      <button type="button" data-view="guide" class="nav-item">진행 안내</button>
     </nav>
     <div class="sidebar-note"><span class="status-dot"></span><strong>파일럿 설계안</strong><p>본실험 전 기기와 화면을 확인해 주세요.</p></div>
-    <div class="sidebar-footer">HAFS EUREKA PROJECT<br><span>WORKLOAD × INTERFACE</span></div>
+    <div class="sidebar-footer">HAFS · 유리프 연구활동<br><span>작업 부담 및 정보 화면 실험</span></div>
   </aside>
   <main class="main">
     <header class="topbar"><span>유리프 연구 <span class="slash">/</span> <b id="crumb">실험 준비</b></span><span class="topbar-right"><i class="status-dot"></i> 브라우저에서 실행</span></header>
