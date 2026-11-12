@@ -1,0 +1,51 @@
+name: Verify research interface isolation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ui-integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run existing experiment tests
+        run: npm test
+      - name: Verify untouched experiment code and runner markup
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git diff --exit-code "$BASE_SHA" HEAD -- js/ styles.css package.json tests/
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+
+          const previous = execFileSync('git', ['show', `${process.env.BASE_SHA}:index.html`], { encoding: 'utf8' });
+          const current = readFileSync('index.html', 'utf8');
+          const ids = html => [...html.matchAll(/\\bid="([^"]+)"/g)].map(match => match[1]).sort();
+          const runner = html => {
+            const start = html.indexOf('<div id="runner"');
+            const end = html.indexOf('<div id="toast"');
+            assert.ok(start >= 0 && end > start, 'Runner boundary missing');
+            return html.slice(start, end);
+          };
+          assert.deepEqual(ids(current), ids(previous), 'DOM IDs have changed');
+          assert.equal(runner(current), runner(previous), 'Experiment runner markup has changed');
+
+          const stylesheet = readFileSync('app-ui.css', 'utf8').replace(/\\/\\*[\\s\\S]*?\\*\\//g, '');
+          for (const match of stylesheet.matchAll(/([^{}]+)\\{/g)) {
+            const selector = match[1].trim();
+            assert.ok(selector.startsWith('#app') || selector.startsWith('@media'),
+              `Unscoped interface selector: ${selector}`);
+          }
+          console.log('Experimental code, DOM IDs, runner HTML, and UI CSS isolation verified.');
+          NODE
