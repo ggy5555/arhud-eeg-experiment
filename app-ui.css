@@ -1,0 +1,633 @@
+/*
+ * Research workspace UI layer.
+ *
+ * Scope: #app (dashboard, session setup, guide, analysis).
+ * The experimental runner (#runner), HUD stimuli, keyboard responses,
+ * timing, condition layouts, and exports intentionally remain untouched.
+ * No external fonts, scripts, transitions, or runtime dependencies.
+ */
+
+#app {
+  --ui-bg: #f7f8f6;
+  --ui-surface: #ffffff;
+  --ui-line: #dfe6df;
+  --ui-text: #27362d;
+  --ui-muted: #607168;
+  --ui-accent: #496f59;
+  --ui-accent-dark: #375844;
+  --ui-soft: #edf3ee;
+  --ui-error: #a24138;
+  color: var(--ui-text);
+  background: var(--ui-bg);
+}
+
+#app.app-shell {
+  grid-template-columns: 222px minmax(0, 1fr);
+}
+
+/* Navigation: plain, predictable and legible. */
+#app .sidebar {
+  padding: 29px 17px 22px;
+  background: #fafbf9;
+  border-right: 1px solid var(--ui-line);
+}
+
+#app .brand {
+  gap: 10px;
+  font-size: 14px;
+  letter-spacing: 0.035em;
+  font-weight: 700;
+}
+
+#app .brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: var(--ui-accent-dark);
+  font-size: 16px;
+  font-weight: 750;
+}
+
+#app .brand small {
+  font-size: 10px;
+  letter-spacing: 0.025em;
+  color: var(--ui-muted);
+  font-weight: 500;
+}
+
+#app .sidebar-label {
+  margin: 42px 11px 10px;
+  font-size: 11px;
+  letter-spacing: 0.015em;
+  color: #7a8980;
+}
+
+#app .nav {
+  gap: 3px;
+}
+
+#app .nav-item {
+  position: relative;
+  min-height: 42px;
+  padding: 10px 12px 10px 15px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #596b60;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.4;
+  word-break: keep-all;
+}
+
+#app .nav-icon {
+  display: none;
+}
+
+#app .nav-item:hover {
+  background: #f1f5f1;
+  color: var(--ui-accent-dark);
+}
+
+#app .nav-item.active {
+  border-color: #dae6dc;
+  background: var(--ui-soft);
+  color: var(--ui-accent-dark);
+  font-weight: 700;
+}
+
+#app .nav-item.active::before {
+  content: "";
+  position: absolute;
+  top: 9px;
+  bottom: 9px;
+  left: 0;
+  width: 3px;
+  background: var(--ui-accent);
+  border-radius: 0 2px 2px 0;
+}
+
+#app .sidebar-note {
+  border: 1px solid var(--ui-line);
+  background: #f4f7f3;
+  border-radius: 6px;
+  padding: 14px;
+  font-size: 12px;
+  color: #435d4b;
+}
+
+#app .sidebar-note p {
+  margin-left: 0;
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+
+#app .sidebar-footer {
+  color: #78877c;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+#app .sidebar-footer span {
+  color: #84938a;
+  font-size: 9px;
+}
+
+/* Main page: compact typography, no decorative graphics. */
+#app .main {
+  max-width: 1320px;
+  padding: 0 clamp(24px, 4.1vw, 62px) 76px;
+}
+
+#app .topbar {
+  height: 65px;
+  color: #65746a;
+  font-size: 12px;
+  border-bottom-color: var(--ui-line);
+}
+
+#app .topbar b {
+  color: var(--ui-text);
+}
+
+#app .page-kicker {
+  margin-top: 38px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: #637e6a;
+}
+
+#app .eyebrow-line {
+  width: 18px;
+  background: #9db3a3;
+}
+
+#app .pill.quiet {
+  background: #e9f0e9;
+  color: #43644c;
+  font-size: 10px;
+}
+
+#app .hero-row {
+  margin: 16px 0 29px;
+  gap: 0;
+}
+
+#app .hero-row h1,
+#app .analysis-heading h1,
+#app #guide-title {
+  font-size: clamp(28px, 3vw, 36px);
+  line-height: 1.32;
+  letter-spacing: -0.04em;
+  font-weight: 700;
+  color: var(--ui-text);
+}
+
+#app .hero-row h1 span,
+#app .analysis-heading h1 span,
+#app #guide-title span {
+  color: var(--ui-text);
+  font-weight: inherit;
+}
+
+#app .hero-diagram {
+  display: none;
+}
+
+#app .lead {
+  margin-top: 12px;
+  color: var(--ui-muted);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+#app .metric-strip {
+  border-color: var(--ui-line);
+  border-radius: 7px;
+  box-shadow: none;
+}
+
+#app .metric-strip > div {
+  padding: 17px 18px;
+  border-right-color: var(--ui-line);
+}
+
+#app .metric-strip span,
+#app .metric-strip small {
+  color: var(--ui-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+#app .metric-strip b {
+  margin: 9px 0 6px;
+  color: var(--ui-accent-dark);
+  font-size: 22px;
+}
+
+#app .section-head {
+  margin: 37px 0 15px;
+}
+
+#app .section-head h2 {
+  margin-top: 5px;
+  font-size: 20px;
+}
+
+#app .section-head p,
+#app .card-title p,
+#app .numbered-title p {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+#app .eyebrow,
+#app .step-badge {
+  color: #687d6f;
+  letter-spacing: 0.055em;
+  font-size: 10px;
+}
+
+#app .content-grid,
+#app .analysis-grid {
+  gap: 15px;
+}
+
+#app .card {
+  padding: 23px;
+  border: 1px solid var(--ui-line);
+  border-radius: 7px;
+  background: var(--ui-surface);
+  box-shadow: none;
+}
+
+#app .card h3 {
+  color: var(--ui-text);
+  font-size: 15px;
+  letter-spacing: -0.015em;
+}
+
+#app .card-title {
+  margin-bottom: 18px;
+}
+
+#app .round-icon {
+  display: none;
+}
+
+/* Session inputs and buttons. Existing elements and IDs stay unchanged. */
+#app .setup-card label,
+#app .mapping-card > label,
+#app .recommend-grid label {
+  color: #41564a;
+  font-size: 12px;
+}
+
+#app .setup-card label small,
+#app .mapping-card label small {
+  color: var(--ui-muted);
+}
+
+#app .setup-card input,
+#app .setup-card select,
+#app .mapping-card input[type="number"],
+#app .recommend-grid input,
+#app .recommend-grid select {
+  height: 44px;
+  background: #fff;
+  border-color: #cdd9d0;
+  border-radius: 5px;
+  color: var(--ui-text);
+  font-size: 13px;
+}
+
+#app .setup-card input::placeholder {
+  color: #79897e;
+}
+
+#app .setup-card select {
+  border-left: 3px solid var(--ui-accent);
+  font-weight: 600;
+}
+
+#app .field-help,
+#app .footnote {
+  color: var(--ui-muted);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+#app .button {
+  min-height: 42px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 650;
+  gap: 12px;
+}
+
+#app .button.primary {
+  background: var(--ui-accent);
+  color: #fff;
+}
+
+#app .button.primary:hover {
+  background: var(--ui-accent-dark);
+}
+
+#app .button.secondary {
+  color: var(--ui-accent-dark);
+  border-color: #cfdcd1;
+}
+
+#app .button.secondary:hover {
+  background: #f4f8f4;
+}
+
+#app .form-error {
+  color: var(--ui-error);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+#app .checklist li b {
+  color: #42594a;
+  font-size: 12px;
+}
+
+#app .checklist li small {
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+
+#app .checklist li > span {
+  color: #55715d;
+  font-size: 11px;
+}
+
+#app .notice-card {
+  padding: 14px 16px;
+  border: 1px solid #d7e3d9;
+  border-left: 3px solid #6f947b;
+  border-radius: 5px;
+  background: #f2f6f2;
+  color: #425a49;
+  font-size: 12px;
+}
+
+#app .notice-card b {
+  color: #375641;
+}
+
+#app .saved-card {
+  background: #fbfdfb;
+  border-color: #cfded0;
+}
+
+#app .saved-card p {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+/* Data workflow: distinguish file sources and improve table readability. */
+#app .analysis-heading {
+  margin: 17px 0 21px;
+}
+
+#app .analysis-grid > .card:first-child {
+  border-top: 3px solid #6e8b75;
+}
+
+#app .analysis-grid > .card:nth-child(2) {
+  border-top: 3px solid #84999d;
+}
+
+#app .numbered-title {
+  gap: 11px;
+  margin-bottom: 17px;
+}
+
+#app .numbered-title > span {
+  background: #eef3ee;
+  border-radius: 4px;
+  color: #4b6c54;
+  font-size: 11px;
+}
+
+#app .file-drop {
+  min-height: 116px;
+  border: 1px dashed #adc1b1;
+  border-radius: 5px;
+  background: #fbfcfa;
+  color: var(--ui-accent-dark);
+}
+
+#app .analysis-grid > .card:nth-child(2) .file-drop {
+  border-color: #b4c5c8;
+  background: #fafcfc;
+}
+
+#app .file-drop:hover {
+  background: #f2f6f2;
+  border-color: #70977a;
+}
+
+#app .file-drop b {
+  font-size: 13px;
+}
+
+#app .file-drop small {
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
+#app .inline-info,
+#app .file-row,
+#app .result-message,
+#app .check-list,
+#app .analysis-hint {
+  font-size: 12px;
+  color: var(--ui-muted);
+  line-height: 1.65;
+}
+
+#app .file-row,
+#app .marker-chip,
+#app .comparison-legend > div {
+  border-radius: 4px;
+}
+
+#app .analysis-hint {
+  background: #f6f8f5;
+  border-left-color: #9bb69f;
+}
+
+#app .table-wrap table {
+  font-size: 12px;
+}
+
+#app .table-wrap th {
+  background: #f4f7f4;
+  color: #42574a;
+  border-bottom: 1px solid var(--ui-line);
+}
+
+#app .table-wrap td {
+  color: #4c6052;
+  border-bottom-color: #e3e9e2;
+}
+
+#app .result-grid {
+  align-items: stretch;
+}
+
+#app .result-cell {
+  border-color: var(--ui-line);
+  border-radius: 5px;
+  background: #fbfcfb;
+}
+
+#app .result-cell span {
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
+#app .result-cell b {
+  color: var(--ui-accent-dark);
+}
+
+#app .guide-list {
+  margin-top: 26px;
+}
+
+#app .guide-card {
+  gap: 16px;
+}
+
+#app .guide-number {
+  color: #577661;
+  font-size: 12px;
+}
+
+#app .guide-card p {
+  color: var(--ui-muted);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+#app .nav-item:focus-visible,
+#app .brand:focus-visible,
+#app .file-drop:focus-within {
+  outline: 2px solid #567960;
+  outline-offset: 2px;
+}
+
+@media (max-width: 1000px) {
+  #app.app-shell {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+
+  #app .main {
+    padding-inline: 25px;
+  }
+
+  #app .metric-strip > div {
+    padding: 15px 13px;
+  }
+}
+
+@media (max-width: 720px) {
+  #app.app-shell {
+    display: block;
+  }
+
+  #app .sidebar {
+    padding: 15px 18px;
+  }
+
+  #app .brand small {
+    display: block;
+  }
+
+  #app .nav {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin-top: 13px;
+    gap: 6px;
+  }
+
+  #app .nav-item {
+    justify-content: center;
+    text-align: center;
+    padding: 10px 6px;
+    min-width: 0;
+    font-size: 12px;
+  }
+
+  #app .nav-item.active::before {
+    top: auto;
+    bottom: 0;
+    left: 12px;
+    right: 12px;
+    width: auto;
+    height: 3px;
+    border-radius: 3px 3px 0 0;
+  }
+
+  #app .main {
+    padding: 0 18px 55px;
+  }
+
+  #app .topbar {
+    height: 53px;
+  }
+
+  #app .topbar-right {
+    font-size: 10px;
+  }
+
+  #app .page-kicker {
+    margin-top: 25px;
+  }
+
+  #app .content-grid,
+  #app .analysis-grid {
+    grid-template-columns: 1fr;
+  }
+
+  #app .card {
+    padding: 18px;
+  }
+
+  #app .metric-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #app .metric-strip > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  #app .metric-strip > div:nth-child(-n+2) {
+    border-bottom: 1px solid var(--ui-line);
+  }
+
+  #app .result-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #app .recommend-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 380px) {
+  #app .nav-item {
+    font-size: 11px;
+  }
+
+  #app .topbar-right {
+    display: none;
+  }
+
+  #app .metric-strip b {
+    font-size: 19px;
+  }
+}
